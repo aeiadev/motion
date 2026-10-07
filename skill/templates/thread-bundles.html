@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="motion-system" content="thread-bundles">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Thread bundles</title>
+<!-- Loop: rebuild seeded ribbon spines through a field with periodic parameters.
+     Thread offsets and widths taper along each spine and breathe on the same phase circle.
+     Query: ?seed=N, ?t=seconds, ?p=0..1 for a still; bg, ink, accent accept hex colours.
+     Space pauses normal playback. Export frames never resume the live loop. -->
+<style>
+  :root { --bg: #eee9de; --ink: #293d36; --accent: #a76648; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c" role="img" aria-label="Woven ribbons of fine green and copper threads flowing over warm paper"></canvas>
+<script>
+(() => {
+  const W = 1600, H = 900, TAU = Math.PI * 2, STEPS = 100, STRANDS = 13;
+  const q = new URLSearchParams(location.search);
+  const parsedSeed = Number.parseInt(q.get('seed') ?? '1', 10);
+  const seed = Number.isFinite(parsedSeed) ? parsedSeed >>> 0 : 1;
+  const parsedDuration = Number.parseFloat(q.get('t') ?? '18');
+  const DURATION = Number.isFinite(parsedDuration) && parsedDuration > 0 ? parsedDuration : 18;
+  for (const key of ['bg', 'ink', 'accent'])
+    if (/^(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(q.get(key) ?? ''))
+      document.documentElement.style.setProperty('--' + key, '#' + q.get(key));
+  const css = key => getComputedStyle(document.documentElement).getPropertyValue(key).trim();
+  function mulberry32(a) {
+    return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  }
+  const rng = mulberry32(seed);
+  const fieldPhase = rng() * TAU, fold = 0.7 + rng() * 0.3, tilt = (rng() - 0.5) * 0.2;
+  const ribbons = Array.from({ length: 10 }, (_, i) => ({
+    x: -290 - rng() * 160, y: -170 + i * 138 + (rng() - 0.5) * 36,
+    width: 35 + rng() * 42, phase: rng() * TAU,
+    accent: i === 3 || (i === 7 && rng() > 0.3), weight: 0.7 + rng() * 0.3
+  }));
+  const points = new Float64Array((STEPS + 1) * 4);
+  const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  let scale = 1, ox = 0, oy = 0;
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cv.width = Math.max(1, Math.round(cv.clientWidth * dpr));
+    cv.height = Math.max(1, Math.round(cv.clientHeight * dpr));
+    scale = Math.max(cv.width / W, cv.height / H);
+    ox = (cv.width - W * scale) / 2;
+    oy = (cv.height - H * scale) / 2;
+  }
+  function draw(p) {
+    const theta = TAU * p, a = 0.2 * Math.cos(theta), b = 0.2 * Math.sin(theta);
+    const ink = css('--ink'), accent = css('--accent');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = css('--bg');
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.setTransform(scale, 0, 0, scale, ox, oy);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (const ribbon of ribbons) {
+      let x = ribbon.x, y = ribbon.y;
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      // The angle field is shared by all ribbons. Midpoint integration keeps folds smooth.
+      const angle = (px, py) => tilt + fold * Math.sin(px * 0.0031 + py * 0.001 + fieldPhase + a)
+        + 0.3 * Math.sin(px * 0.0019 - py * 0.0034 + fieldPhase * 0.7 + b);
+      for (let s = 0; s <= STEPS; s++) {
+        const direction = angle(x, y), u = s / STEPS;
+        const width = ribbon.width * Math.pow(Math.sin(Math.PI * u), 0.65)
+          * (0.68 + 0.32 * Math.pow(Math.sin(u * Math.PI * 2 + ribbon.phase + 0.22 * Math.sin(theta)), 2));
+        const j = s * 4;
+        points[j] = x; points[j + 1] = y;
+        points[j + 2] = -Math.sin(direction) * width;
+        points[j + 3] = Math.cos(direction) * width;
+        minX = Math.min(minX, x - width); maxX = Math.max(maxX, x + width);
+        minY = Math.min(minY, y - width); maxY = Math.max(maxY, y + width);
+        const mid = angle(x + Math.cos(direction) * 12.65, y + Math.sin(direction) * 12.65);
+        x += Math.cos(mid) * 25.3;
+        y += Math.sin(mid) * 25.3;
+      }
+      if (maxX < -ox / scale || minX > (cv.width - ox) / scale
+        || maxY < -oy / scale || minY > (cv.height - oy) / scale) continue;
+      const colour = ribbon.accent ? accent : ink;
+      // A translucent core joins the fine threads into a broad, softly layered ribbon.
+      ctx.beginPath();
+      for (let s = 0; s <= STEPS; s++) {
+        const j = s * 4;
+        if (s === 0) ctx.moveTo(points[j] + points[j + 2], points[j + 1] + points[j + 3]);
+        else ctx.lineTo(points[j] + points[j + 2], points[j + 1] + points[j + 3]);
+      }
+      for (let s = STEPS; s >= 0; s--) {
+        const j = s * 4;
+        ctx.lineTo(points[j] - points[j + 2], points[j + 1] - points[j + 3]);
+      }
+      ctx.closePath(); ctx.fillStyle = colour; ctx.globalAlpha = 0.035; ctx.fill();
+      ctx.strokeStyle = colour;
+      for (let strand = 0; strand < STRANDS; strand++) {
+        const offset = strand / (STRANDS - 1) * 2 - 1;
+        ctx.globalAlpha = (0.3 + 0.4 * (1 - Math.abs(offset))) * ribbon.weight;
+        ctx.lineWidth = 0.55 + 0.55 * Math.pow(1 - Math.abs(offset), 2);
+        ctx.beginPath();
+        for (let s = 0; s <= STEPS; s++) {
+          const j = s * 4, px = points[j] + points[j + 2] * offset, py = points[j + 1] + points[j + 3] * offset;
+          if (s === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+  const normalize = p => ((p % 1) + 1) % 1;
+  const requestedPhase = Number.parseFloat(q.get('p') ?? '0');
+  let phase = Number.isFinite(requestedPhase) ? normalize(requestedPhase) : 0;
+  let frozen = q.has('p'), exported = false, frameId = null, last = null;
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  window.__info = { seed, duration: DURATION, frames: 0 };
+  function stop() {
+    if (frameId !== null) cancelAnimationFrame(frameId);
+    frameId = null; last = null;
+  }
+  window.renderFrame = (i, total) => {
+    if (!Number.isFinite(i) || !Number.isInteger(total) || total < 1)
+      throw new RangeError('renderFrame needs a finite frame index and a positive integer total');
+    stop(); frozen = true; exported = true;
+    phase = normalize(i / total); draw(phase);
+  };
+  function tick(now) {
+    frameId = null;
+    if (reduced.matches || frozen || document.hidden) return;
+    const dt = last === null ? 0 : Math.min((now - last) / 1000, 0.1);
+    last = now; phase = normalize(phase + dt / DURATION);
+    draw(phase); window.__info.frames++;
+    frameId = requestAnimationFrame(tick);
+  }
+  function start() {
+    if (!reduced.matches && !frozen && !document.hidden && frameId === null)
+      frameId = requestAnimationFrame(tick);
+  }
+  resize(); draw(phase);
+  addEventListener('resize', () => { resize(); if (!document.hidden) draw(phase); });
+  reduced.addEventListener('change', () => { stop(); if (!document.hidden) draw(phase); start(); });
+  document.addEventListener('visibilitychange', () => { stop(); if (!document.hidden) { draw(phase); start(); } });
+  addEventListener('keydown', event => {
+    if (event.code !== 'Space' || event.repeat || q.has('p') || reduced.matches || exported) return;
+    event.preventDefault(); frozen = !frozen; stop(); start();
+  });
+  if (reduced.matches || q.has('p')) return;
+  start();
+})();
+</script>
+</body>
+</html>

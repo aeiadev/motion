@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="motion-system" content="noise-ridgelines">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Noise ridgelines</title>
+<!-- Loop: fixed perspective lines sample a seeded noise field with circular phase offsets.
+     Every frame rebuilds the unbroken ridges from back to front. The horizon is fixed.
+     Query: ?seed=N, ?t=seconds, ?p=0..1 for a still.
+     Palette: ?bg=RRGGBB&ink=RRGGBB&accent=RRGGBB. Space pauses playback. -->
+<style>
+  :root { --bg: #f0ecdf; --ink: #354c50; --accent: #a36949; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c" role="img" aria-label="Fine continuous ink ridges rising from a still horizon on pale paper"></canvas>
+<script>
+(() => {
+  const q = new URLSearchParams(location.search);
+  const parsedSeed = Number.parseInt(q.get('seed') ?? '1', 10);
+  const seed = Number.isFinite(parsedSeed) ? parsedSeed >>> 0 : 1;
+  const parsedDuration = Number.parseFloat(q.get('t') ?? '16');
+  const DURATION = Number.isFinite(parsedDuration) && parsedDuration > 0 ? parsedDuration : 16;
+  for (const key of ['bg', 'ink', 'accent'])
+    if (/^(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(q.get(key) ?? ''))
+      document.documentElement.style.setProperty('--' + key, '#' + q.get(key));
+  const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  function mulberry32(a) {
+    return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  }
+  const cv = document.getElementById('c'), ctx = cv.getContext('2d', { alpha: false });
+
+  const TAU = Math.PI * 2, LINES = 64, SAMPLES = 160;
+  const r = mulberry32(seed), P = new Uint8Array(512), V = new Float32Array(256);
+  for (let i = 0; i < 256; i++) { P[i] = i; V[i] = r(); }
+  for (let i = 255; i > 0; i--) { const j = (r() * (i + 1)) | 0; [P[i], P[j]] = [P[j], P[i]]; }
+  for (let i = 0; i < 256; i++) P[i + 256] = P[i];
+  const fade = t => t * t * t * (t * (t * 6 - 15) + 10);
+  function noise(x, y) {
+    const ix = Math.floor(x), iy = Math.floor(y), u = fade(x - ix), v = fade(y - iy);
+    const X = ix & 255, Y = iy & 255;
+    const a = V[P[P[X] + Y]], b = V[P[P[X + 1] + Y]];
+    const c = V[P[P[X] + Y + 1]], d = V[P[P[X + 1] + Y + 1]];
+    return a + (b - a) * u + (c - a + (a - b - c + d) * u) * v;
+  }
+  const offset = r() * 90, ridgeA = 0.26 + r() * 0.16, ridgeB = 0.59 + r() * 0.18;
+  const frequency = 3.8 + r() * 2, depthScale = 2 + r(), orbit = 0.35 + r() * 0.18;
+  const lines = Array.from({ length: LINES }, (_, i) => ({
+    depth: i / (LINES - 1), density: 0.55 + r() * 0.27, weight: 0.8 + r() * 0.28,
+    grain: r() * TAU, accent: i === LINES - 6
+  }));
+  const positions = Float32Array.from({ length: SAMPLES + 1 }, (_, i) => i / SAMPLES);
+  const envelope = Float32Array.from(positions, u => {
+    const left = Math.exp(-Math.pow((u - ridgeA) / 0.16, 2));
+    const right = Math.exp(-Math.pow((u - ridgeB) / 0.20, 2));
+    return Math.pow(Math.sin(Math.PI * u), 1.8) * (0.23 + 0.70 * left + 0.80 * right);
+  });
+  let W = 1, H = 1, dpr = 1;
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = Math.max(1, cv.clientWidth); H = Math.max(1, cv.clientHeight);
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  }
+  function draw(p) {
+    const theta = p * TAU, cx = Math.cos(theta) * orbit, cy = Math.sin(theta) * orbit;
+    const ink = css('--ink'), accent = css('--accent');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.globalAlpha = 1; ctx.fillStyle = css('--bg'); ctx.fillRect(0, 0, W, H);
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    const left = W * 0.065, width = W * 0.87, horizon = H * 0.27, span = H * 0.63;
+    const lineScale = Math.max(0.5, Math.min(W / 1400, H / 800));
+    for (const line of lines) {
+      const t = line.depth, z = Math.pow(t, 1.42), y0 = horizon + span * z;
+      const amplitude = H * 0.30 * z, ny = offset + t * depthScale;
+      ctx.strokeStyle = line.accent ? accent : ink;
+      ctx.lineWidth = lineScale * line.weight;
+      const ridge = new Path2D();
+      for (let i = 0; i <= SAMPLES; i++) {
+        const u = positions[i], nx = offset + u * frequency;
+        const broad = noise(nx + cx, ny + cy);
+        const detail = noise(nx * 2.7 + cx, ny * 2.1 + cy);
+        const fine = noise(nx * 6.2 + cx, ny * 3.6 + cy);
+        const height = (0.18 + 0.65 * broad + 0.13 * detail + 0.04 * fine) * envelope[i];
+        // Subpixel edge irregularity is fixed and continuous, like a fine dry pen.
+        const tooth = Math.sin(u * 167 + line.grain) * 0.13 * lineScale * t;
+        const x = left + u * width, y = y0 - amplitude * height + tooth;
+        if (i === 0) ridge.moveTo(x, y); else ridge.lineTo(x, y);
+      }
+      // Opaque ground hides distant strokes; only the open crest gets ink.
+      const ground = new Path2D(ridge);
+      ground.lineTo(left + width, H); ground.lineTo(left, H); ground.closePath();
+      ctx.globalAlpha = 1;
+      ctx.fill(ground);
+      ctx.globalAlpha = line.density * (0.54 + t * 0.46);
+      ctx.stroke(ridge);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  const normalize = p => ((p % 1) + 1) % 1;
+  const requestedPhase = Number.parseFloat(q.get('p') ?? '0');
+  let phase = Number.isFinite(requestedPhase) ? normalize(requestedPhase) : 0;
+  let frozen = q.has('p'), frameId = null, last = null;
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  window.__info = { seed, duration: DURATION, frames: 0 };
+
+  function stop() {
+    if (frameId !== null) cancelAnimationFrame(frameId);
+    frameId = null;
+    last = null;
+  }
+  // Rendering an export frame stops playback, including if called without ?p=.
+  window.renderFrame = (i, total) => {
+    if (!Number.isFinite(i) || !Number.isInteger(total) || total < 1)
+      throw new RangeError('renderFrame needs a finite frame index and a positive integer total');
+    stop();
+    frozen = true;
+    phase = normalize(i / total);
+    draw(phase);
+  };
+
+  function tick(now) {
+    frameId = null;
+    if (reduced.matches || frozen) return;
+    const dt = last === null ? 0 : Math.min((now - last) / 1000, 0.1);
+    last = now;
+    if (!document.hidden) {
+      phase = normalize(phase + dt / DURATION);
+      draw(phase);
+      window.__info.frames++;
+    }
+    frameId = requestAnimationFrame(tick);
+  }
+  function start() {
+    if (!reduced.matches && !frozen && frameId === null)
+      frameId = requestAnimationFrame(tick);
+  }
+  resize();
+  draw(phase);
+  addEventListener('resize', () => { resize(); draw(phase); });
+  reduced.addEventListener('change', () => {
+    stop();
+    draw(phase);
+    start();
+  });
+  addEventListener('keydown', event => {
+    if (event.code !== 'Space' || q.has('p') || reduced.matches) return;
+    event.preventDefault();
+    frozen = !frozen;
+    stop();
+    start();
+  });
+  // A reduced-motion preference or a requested phase draws one still, with no RAF.
+  if (reduced.matches || q.has('p')) return;
+  start();
+})();
+</script>
+</body>
+</html>

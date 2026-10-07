@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="motion-system" content="lorenz">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lorenz | Copper wire</title>
+<!-- Loop method: integrate a fixed seeded trajectory once with RK4, then orbit the
+     stored geometry with bounded sine/cosine camera angles. No live integration.
+     Query: ?seed=N, ?p=0..1 for a still, ?t=seconds. Space pauses playback.
+     Optional palette: ?bg=RRGGBB&ink=RRGGBB&accent=RRGGBB. -->
+<style>
+  :root { --bg: #eee9df; --ink: #36332e; --accent: #ae5e3d; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c" role="img" aria-label="A fine copper and graphite trajectory folded into two Lorenz lobes"></canvas>
+<script>
+(() => {
+  const q = new URLSearchParams(location.search);
+  const parsedSeed = Number.parseInt(q.get('seed') ?? '1', 10);
+  const seed = Number.isFinite(parsedSeed) ? parsedSeed >>> 0 : 1;
+  const parsedDuration = Number.parseFloat(q.get('t') ?? '16');
+  const DURATION = Number.isFinite(parsedDuration) && parsedDuration > 0 ? parsedDuration : 16;
+  for (const key of ['bg', 'ink', 'accent']) {
+    if (/^(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(q.get(key) ?? ''))
+      document.documentElement.style.setProperty('--' + key, '#' + q.get(key));
+  }
+  function mulberry32(a) {
+    return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  }
+  const random = mulberry32(seed);
+  const TAU = 2 * Math.PI;
+  const COUNT = 9600, WARMUP = 1800, DT = 0.006;
+  let x = 0.2 + random() * 1.8, y = 0.3 + random() * 1.7, z = 0.4 + random() * 1.6;
+  const sigma = 10, rho = 28, beta = 8 / 3;
+  function derivative(x, y, z, out) {
+    out[0] = sigma * (y - x);
+    out[1] = x * (rho - z) - y;
+    out[2] = x * y - beta * z;
+  }
+  // Fourth-order integration is done only at startup, with a fixed step count.
+  const points = new Float32Array(COUNT * 3);
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  const k1 = new Float64Array(3), k2 = new Float64Array(3),
+        k3 = new Float64Array(3), k4 = new Float64Array(3);
+  for (let step = 0; step < WARMUP + COUNT; step++) {
+    derivative(x, y, z, k1);
+    derivative(x + DT * k1[0] / 2, y + DT * k1[1] / 2, z + DT * k1[2] / 2, k2);
+    derivative(x + DT * k2[0] / 2, y + DT * k2[1] / 2, z + DT * k2[2] / 2, k3);
+    derivative(x + DT * k3[0], y + DT * k3[1], z + DT * k3[2], k4);
+    x += DT * (k1[0] + 2 * k2[0] + 2 * k3[0] + k4[0]) / 6;
+    y += DT * (k1[1] + 2 * k2[1] + 2 * k3[1] + k4[1]) / 6;
+    z += DT * (k1[2] + 2 * k2[2] + 2 * k3[2] + k4[2]) / 6;
+    if (step < WARMUP) continue;
+    const i = (step - WARMUP) * 3;
+    points[i] = x; points[i + 1] = y; points[i + 2] = z;
+    lo[0] = Math.min(lo[0], x); hi[0] = Math.max(hi[0], x);
+    lo[1] = Math.min(lo[1], y); hi[1] = Math.max(hi[1], y);
+    lo[2] = Math.min(lo[2], z); hi[2] = Math.max(hi[2], z);
+  }
+  const center = lo.map((v, i) => (v + hi[i]) / 2);
+  const unit = 2 / Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
+  for (let i = 0; i < points.length; i++) points[i] = (points[i] - center[i % 3]) * unit;
+
+  // Camera and wire traits survive warm-up and visibly distinguish each seed.
+  // X and Y track together: keep both projection weights positive throughout
+  // the orbit so the two lobes never collapse into an edge-on sliver.
+  const yawBase = -1.05 + random() * 0.85, pitchBase = -0.3 + random() * 0.8;
+  const roll = (random() - 0.5) * 0.75, offset = random() * TAU;
+  const wireWeight = 0.75 + random() * 0.85;
+  const accentOffset = Math.floor(random() * 11), accentStride = 3 + Math.floor(random() * 6);
+  const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  const screen = new Float32Array(COUNT * 3);
+  const fallback = { bg: '#eee9df', ink: '#36332e', accent: '#ae5e3d' };
+  const palette = key => getComputedStyle(cv).getPropertyValue('--' + key).trim() || fallback[key];
+  let W = 1, H = 1, dpr = 1;
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = cv.width = Math.max(1, Math.round(cv.clientWidth * dpr));
+    H = cv.height = Math.max(1, Math.round(cv.clientHeight * dpr));
+  }
+  function draw(p) {
+    const theta = TAU * p;
+    const yaw = yawBase + 0.16 * Math.sin(theta + offset);
+    const pitch = pitchBase + 0.075 * Math.cos(theta + offset);
+    const cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
+    const cr = Math.cos(roll), sr = Math.sin(roll);
+    const scale = Math.min(W * 0.34, H * 0.37);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = palette('bg');
+    ctx.fillRect(0, 0, W, H);
+    for (let i = 0; i < points.length; i += 3) {
+      const xx = points[i] * cy - points[i + 1] * sy;
+      const depth = points[i] * sy + points[i + 1] * cy;
+      const yy = points[i + 2] * cp - depth * sp;
+      const zz = points[i + 2] * sp + depth * cp;
+      const perspective = 1 / (1 + zz * 0.1);
+      screen[i] = W / 2 + (xx * cr - yy * sr) * scale * perspective;
+      screen[i + 1] = H / 2 - (xx * sr + yy * cr) * scale * perspective;
+      screen[i + 2] = zz;
+    }
+    const ink = palette('ink'), accent = palette('accent');
+    ctx.lineWidth = wireWeight * Math.max(0.55 * dpr, Math.min(W, H) * 0.00073);
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    // Long contiguous wire runs keep raster work bounded and the center open.
+    const stride = 48;
+    for (let start = 0; start < COUNT - 1; start += stride) {
+      const end = Math.min(COUNT - 1, start + stride);
+      const depth = screen[(start + end >> 1) * 3 + 2];
+      ctx.globalAlpha = Math.max(0.16, Math.min(0.65, 0.39 - depth * 0.18));
+      ctx.strokeStyle = ((start / stride | 0) + accentOffset) % accentStride === 0 ? accent : ink;
+      ctx.beginPath();
+      ctx.moveTo(screen[start * 3], screen[start * 3 + 1]);
+      for (let i = start + 1; i <= end; i++) ctx.lineTo(screen[i * 3], screen[i * 3 + 1]);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+  const normalize = p => ((p % 1) + 1) % 1;
+  const requestedPhase = Number.parseFloat(q.get('p') ?? '0');
+  let phase = Number.isFinite(requestedPhase) ? normalize(requestedPhase) : 0;
+  let exported = false;
+  let frozen = q.has('p'), frameId = null, last = null;
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  window.__info = { seed, duration: DURATION, frames: 0 };
+  function stop() {
+    if (frameId !== null) cancelAnimationFrame(frameId);
+    frameId = null; last = null;
+  }
+  window.renderFrame = (i, total) => {
+    if (!Number.isFinite(i) || !Number.isInteger(total) || total < 1)
+      throw new RangeError('renderFrame needs a finite frame index and a positive integer total');
+    stop(); exported = true; frozen = true; phase = normalize(i / total); draw(phase);
+  };
+  function tick(now) {
+    frameId = null;
+    if (reduced.matches || frozen || document.hidden) return;
+    const dt = last === null ? 0 : Math.min((now - last) / 1000, 0.1);
+    last = now; phase = normalize(phase + dt / DURATION);
+    draw(phase); window.__info.frames++;
+    frameId = requestAnimationFrame(tick);
+  }
+  function start() {
+    if (!reduced.matches && !frozen && !document.hidden && frameId === null)
+      frameId = requestAnimationFrame(tick);
+  }
+  resize(); draw(phase);
+  addEventListener('resize', () => { resize(); if (!document.hidden) draw(phase); });
+  document.addEventListener('visibilitychange', () => { stop(); if (!document.hidden) { draw(phase); start(); } });
+  reduced.addEventListener('change', () => { stop(); if (!document.hidden) draw(phase); start(); });
+  addEventListener('keydown', event => {
+    if (event.code !== 'Space' || event.repeat || exported || q.has('p') || reduced.matches) return;
+    event.preventDefault(); frozen = !frozen; stop(); start();
+  });
+  if (reduced.matches || q.has('p')) return;
+  start();
+})();
+</script>
+</body>
+</html>

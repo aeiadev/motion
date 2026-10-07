@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="motion-system" content="soft-bodies">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Soft body studies</title>
+<!-- Loop: settle seeded pressurised spring rings for 240 fixed steps, including
+     contact planes. Store the rest shapes; bounded integer-frequency radial modes
+     animate them without advancing the solver or accumulating collision history.
+     Query: ?seed=N, ?t=seconds (default 18), ?p=0..1 for a still.
+     Palette: ?bg=RRGGBB&ink=RRGGBB&accent=RRGGBB. Space pauses. -->
+<style>
+  :root { --bg: #ede9df; --ink: #2f4941; --accent: #b86c50; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c" role="img" aria-label="Six softly pressurised clay contours with yielding contact edges"></canvas>
+<script>
+(() => {
+
+  const TAU = Math.PI * 2;
+  const q = new URLSearchParams(location.search);
+  const parsedSeed = Number.parseInt(q.get('seed') ?? '1', 10);
+  const seed = Number.isFinite(parsedSeed) ? parsedSeed >>> 0 : 1;
+  const parsedDuration = Number.parseFloat(q.get('t') ?? '18');
+  const DURATION = Number.isFinite(parsedDuration) && parsedDuration > 0 ? parsedDuration : 18;
+  for (const key of ['bg', 'ink', 'accent'])
+    if (/^(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(q.get(key) ?? ''))
+      document.documentElement.style.setProperty('--' + key, '#' + q.get(key));
+  const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  function mulberry32(a) {
+    return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  }
+  const rng = mulberry32(seed);
+  const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  let W = 1, H = 1, scale = 1, dpr = 1;
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = Math.max(1, cv.clientWidth); H = Math.max(1, cv.clientHeight);
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    scale = Math.min(W / 1600, H / 900);
+  }
+
+  const N = 56;
+  const bodies = [];
+  const centers = [[-0.99, -0.49], [0, -0.57], [0.98, -0.47], [-0.99, 0.52], [0, 0.48], [0.98, 0.55]];
+  for (let b = 0; b < centers.length; b++) {
+    const cx = centers[b][0] + (rng() - 0.5) * 0.07, cy = centers[b][1] + (rng() - 0.5) * 0.07;
+    const rx = 0.54 + rng() * 0.09, ry = 0.54 + rng() * 0.06;
+    const ph = rng() * TAU, tilt = (rng() - 0.5) * 0.23;
+    const nodes = Array.from({ length: N }, (_, i) => {
+      const t = i / N * TAU, r = 1 + 0.08 * Math.sin(3 * t + ph) + 0.045 * Math.cos(2 * t - ph);
+      const x = Math.cos(t + tilt) * rx * r, y = Math.sin(t + tilt) * ry * r;
+      return { x, y, vx: 0, vy: 0, restX: x, restY: y };
+    });
+    const lengths = nodes.map((a, i) => {
+      const b = nodes[(i + 1) % N]; return Math.hypot(a.x - b.x, a.y - b.y);
+    });
+    bodies.push({ cx, cy, rx, ry, nodes, lengths, ph, tint: 0.07 + rng() * 0.16,
+      colored: b === 1 || b === 5, frequency: 1 + (b % 2) });
+  }
+  // Springs resist stretch; area pressure restores volume; neighbor bisectors
+  // act as contact planes. A generous gap absorbs the small periodic deformation.
+  for (const body of bodies) {
+    const targetArea = Math.PI * body.rx * body.ry;
+    const planes = bodies.filter(other => other !== body).map(other => {
+      const dx = other.cx - body.cx, dy = other.cy - body.cy, distance = Math.hypot(dx, dy);
+      return { nx: dx / distance, ny: dy / distance, limit: distance / 2 - 0.044 };
+    });
+    for (let step = 0; step < 240; step++) {
+      let area = 0;
+      for (let i = 0; i < N; i++) {
+        const a = body.nodes[i], b = body.nodes[(i + 1) % N]; area += a.x * b.y - b.x * a.y;
+      }
+      const pressure = 0.004 + Math.max(-0.012, Math.min(0.025, (targetArea - area / 2) * 0.055));
+      const forces = body.nodes.map((a, i) => {
+        const before = body.nodes[(i + N - 1) % N], after = body.nodes[(i + 1) % N];
+        let fx = (a.restX - a.x) * 0.013, fy = (a.restY - a.y) * 0.013;
+        for (const [other, rest] of [[before, body.lengths[(i + N - 1) % N]], [after, body.lengths[i]]]) {
+          const dx = other.x - a.x, dy = other.y - a.y, length = Math.max(0.0001, Math.hypot(dx, dy));
+          const tension = (length - rest) * 0.35 / length; fx += dx * tension; fy += dy * tension;
+        }
+        const nx = after.y - before.y, ny = before.x - after.x, normal = Math.max(0.0001, Math.hypot(nx, ny));
+        fx += nx / normal * pressure + (before.x + after.x - 2 * a.x) * 0.035;
+        fy += ny / normal * pressure + (before.y + after.y - 2 * a.y) * 0.035;
+        return [fx, fy];
+      });
+      for (let i = 0; i < N; i++) {
+        const a = body.nodes[i];
+        a.vx = (a.vx + forces[i][0]) * 0.76; a.vy = (a.vy + forces[i][1]) * 0.76;
+        a.x += a.vx; a.y += a.vy;
+        for (const plane of planes) {
+          const penetration = a.x * plane.nx + a.y * plane.ny - plane.limit;
+          if (penetration > 0) { a.x -= plane.nx * penetration; a.y -= plane.ny * penetration; a.vx *= 0.4; a.vy *= 0.4; }
+        }
+      }
+    }
+  }
+
+  // Resolve arbitrary CSS colors once per frame, retaining host palette support.
+  const sample = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+  sample.canvas.width = sample.canvas.height = 1;
+  function rgb(color) {
+    sample.clearRect(0, 0, 1, 1); sample.fillStyle = color; sample.fillRect(0, 0, 1, 1);
+    return Array.from(sample.getImageData(0, 0, 1, 1).data).slice(0, 3);
+  }
+  const blend = (a, b, t) => 'rgb(' + a.map((value, i) => Math.round(value + (b[i] - value) * t)).join(',') + ')';
+  function outline(points, factor = 1, dx = 0, dy = 0, start = 0, count = N) {
+    const first = points[start % N], previous = points[(start + N - 1) % N];
+    ctx.beginPath(); ctx.moveTo((first.x + previous.x) / 2 * factor + dx, (first.y + previous.y) / 2 * factor + dy);
+    for (let j = 0; j < count; j++) {
+      const a = points[(start + j) % N], b = points[(start + j + 1) % N];
+      ctx.quadraticCurveTo(a.x * factor + dx, a.y * factor + dy,
+        (a.x + b.x) / 2 * factor + dx, (a.y + b.y) / 2 * factor + dy);
+    }
+    if (count === N) ctx.closePath();
+  }
+  function draw(p) {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const bg = css('--bg'), ink = css('--ink'), accent = css('--accent');
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+    const B = rgb(bg), I = rgb(ink), A = rgb(accent), th = p * TAU;
+    const portrait = W < H * 0.85;
+    const unit = portrait ? Math.min(W / 3.1, H / 3.95) : Math.min(W / 3.95, H / 3.1);
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    for (const body of bodies) {
+      const points = body.nodes.map((a, i) => {
+        const angle = i / N * TAU;
+        const mode = 1 + 0.013 * Math.sin(th * body.frequency + body.ph) * Math.cos(2 * angle + body.ph)
+          + 0.008 * Math.cos(th + body.ph) * Math.sin(3 * angle - body.ph);
+        return { x: a.x * mode, y: a.y * mode };
+      });
+      if (portrait)
+        ctx.setTransform(0, dpr * unit, -dpr * unit, 0, dpr * (W / 2 - body.cy * unit), dpr * (H / 2 + body.cx * unit));
+      else
+        ctx.setTransform(dpr * unit, 0, 0, dpr * unit, dpr * (W / 2 + body.cx * unit), dpr * (H / 2 + body.cy * unit));
+      outline(points, 1, 0.012, 0.025); ctx.fillStyle = ink; ctx.globalAlpha = 0.055; ctx.fill(); ctx.globalAlpha = 1;
+      const base = body.colored ? A : I, strength = body.colored ? 0.79 : body.tint;
+      const gradient = ctx.createLinearGradient(-0.4, -0.7, 0.6, 0.7);
+      gradient.addColorStop(0, blend(B, base, strength * 0.72));
+      gradient.addColorStop(0.65, blend(B, base, strength));
+      gradient.addColorStop(1, blend(B, base, Math.min(1, strength + 0.10)));
+      outline(points); ctx.fillStyle = gradient; ctx.fill();
+      ctx.strokeStyle = blend(B, I, body.colored ? 0.65 : 0.48); ctx.lineWidth = 1.8 / unit; ctx.stroke();
+      // Only two contour weights. Broken interior contours describe soft pressure.
+      ctx.lineWidth = 0.75 / unit; ctx.strokeStyle = ink; ctx.globalAlpha = 0.2;
+      outline(points, 0.92, 0.004, 0.012, 3, 20); ctx.stroke();
+      ctx.globalAlpha = 0.12; outline(points, 0.81, 0.014, 0.015, 5, 17); ctx.stroke();
+      ctx.strokeStyle = bg; ctx.globalAlpha = 0.65;
+      outline(points, 0.95, -0.002, -0.008, 29, 20); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  const normalize = p => ((p % 1) + 1) % 1;
+  const requestedPhase = Number.parseFloat(q.get('p') ?? '0');
+  let phase = Number.isFinite(requestedPhase) ? normalize(requestedPhase) : 0;
+  let frozen = q.has('p'), frameId = null, last = null;
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  window.__info = { seed, duration: DURATION, frames: 0 };
+
+  function stop() {
+    if (frameId !== null) cancelAnimationFrame(frameId);
+    frameId = null;
+    last = null;
+  }
+  // Rendering an export frame stops playback, including if called without ?p=.
+  window.renderFrame = (i, total) => {
+    if (!Number.isFinite(i) || !Number.isInteger(total) || total < 1)
+      throw new RangeError('renderFrame needs a finite frame index and a positive integer total');
+    stop();
+    frozen = true;
+    phase = normalize(i / total);
+    draw(phase);
+  };
+
+  function tick(now) {
+    frameId = null;
+    if (reduced.matches || frozen) return;
+    const dt = last === null ? 0 : Math.min((now - last) / 1000, 0.1);
+    last = now;
+    if (!document.hidden) {
+      phase = normalize(phase + dt / DURATION);
+      draw(phase);
+      window.__info.frames++;
+    }
+    frameId = requestAnimationFrame(tick);
+  }
+  function start() {
+    if (!reduced.matches && !frozen && frameId === null)
+      frameId = requestAnimationFrame(tick);
+  }
+  resize();
+  draw(phase);
+  addEventListener('resize', () => { resize(); draw(phase); });
+  reduced.addEventListener('change', () => {
+    stop();
+    draw(phase);
+    start();
+  });
+  addEventListener('keydown', event => {
+    if (event.code !== 'Space' || q.has('p') || reduced.matches) return;
+    event.preventDefault();
+    frozen = !frozen;
+    stop();
+    start();
+  });
+  // A reduced-motion preference or a requested phase draws one still, with no RAF.
+  if (reduced.matches || q.has('p')) return;
+  start();
+})();
+</script>
+</body>
+</html>

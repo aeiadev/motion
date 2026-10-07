@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="motion-system" content="looped-strip">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Looped strip</title>
+<!-- Loop: A fixed parametric ribbon has one half-twist. Its rigid rotation completes
+     one full turn per cycle; no geometry or simulation state accumulates.
+     Query: ?seed=N, ?t=seconds (default 16), ?p=0..1 for a still.
+     Palette: ?bg=RRGGBB&ink=RRGGBB&accent=RRGGBB. Space pauses playback. -->
+<style>
+  :root { --bg: #142823; --ink: #e8e0c9; --accent: #c38453; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c" role="img" aria-label="A slowly turning paper Mobius ribbon"></canvas>
+<script>
+(() => {
+  const q = new URLSearchParams(location.search);
+  const parsedSeed = Number.parseInt(q.get('seed') ?? '1', 10);
+  const seed = Number.isFinite(parsedSeed) ? parsedSeed >>> 0 : 1;
+  const parsedDuration = Number.parseFloat(q.get('t') ?? '16');
+  const DURATION = Number.isFinite(parsedDuration) && parsedDuration > 0 ? parsedDuration : 16;
+  for (const name of ['bg', 'ink', 'accent'])
+    if (/^(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(q.get(name) ?? ''))
+      document.documentElement.style.setProperty('--' + name, '#' + q.get(name));
+  function mulberry32(a) {
+    return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  }
+  const rng = mulberry32(seed), TAU = Math.PI * 2;
+  const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const swatch = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+  swatch.canvas.width = swatch.canvas.height = 1;
+  const colors = new Map();
+  function rgb(value) {
+    if (!colors.has(value)) {
+      swatch.clearRect(0, 0, 1, 1); swatch.fillStyle = '#000'; swatch.fillStyle = value;
+      swatch.fillRect(0, 0, 1, 1);
+      colors.set(value, Array.from(swatch.getImageData(0, 0, 1, 1).data).slice(0, 3));
+    }
+    return colors.get(value);
+  }
+  const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+  const color = a => 'rgb(' + a.map(v => Math.round(v)).join(',') + ')';
+  const unit = a => { const n = Math.hypot(...a) || 1; return a.map(v => v / n); };
+  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  let W = 1, H = 1, scale = 1;
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = cv.width = Math.max(1, Math.round(cv.clientWidth * dpr));
+    H = cv.height = Math.max(1, Math.round(cv.clientHeight * dpr));
+    scale = Math.min(W * 0.20, H * 0.20);
+  }
+  function polygon(points) {
+    ctx.beginPath();
+    points.forEach((point, i) => {
+      const x = W / 2 + point[0] * scale, y = H * 0.47 - point[1] * scale;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.closePath();
+  }
+
+  const radius = 1.52 + rng() * 0.14, width = 0.48 + rng() * 0.16;
+  const offset = rng() * TAU, tilt = 0.48 + rng() * 0.26, roll = (rng() - 0.5) * 0.34;
+  const rows = 144, columns = 6, mesh = [];
+  // The u=2*pi edge reverses v, closing the single-sided Mobius surface.
+  function band(u, v) {
+    const r = radius + v * Math.cos(u / 2);
+    return [r * Math.cos(u), v * Math.sin(u / 2), r * Math.sin(u)];
+  }
+  for (let i = 0; i < rows; i++) for (let j = 0; j < columns; j++) {
+    const u0 = TAU * i / rows, u1 = TAU * (i + 1) / rows;
+    const v0 = width * (2 * j / columns - 1), v1 = width * (2 * (j + 1) / columns - 1);
+    const points = [band(u0, v0), band(u1, v0), band(u1, v1), band(u0, v1)];
+    const a = points[1].map((v, n) => v - points[0][n]);
+    const b = points[3].map((v, n) => v - points[0][n]);
+    mesh.push({ points, normal: unit(cross(a, b)), edge: j === 0 ? 0 : j === columns - 1 ? 2 : -1 });
+  }
+  const light = unit([-0.6, 0.75, 1]);
+  function draw(p) {
+    const angle = TAU * p + offset, ca = Math.cos(angle), sa = Math.sin(angle);
+    const ct = Math.cos(tilt), st = Math.sin(tilt), cr = Math.cos(roll), sr = Math.sin(roll);
+    const transform = a => {
+      const x = a[0] * ca + a[2] * sa, z = a[2] * ca - a[0] * sa;
+      const y = a[1] * ct - z * st, depth = a[1] * st + z * ct;
+      return [x * cr - y * sr, x * sr + y * cr, depth];
+    };
+    const bg = rgb(css('--bg')), ink = rgb(css('--ink')), accent = rgb(css('--accent'));
+    ctx.fillStyle = color(bg); ctx.fillRect(0, 0, W, H);
+    // An understated ground shadow leaves the sculpture as the only subject.
+    ctx.save(); ctx.translate(W / 2, H * 0.47 + scale * 1.75); ctx.scale(scale * 1.65, scale * 0.13);
+    const shadow = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+    shadow.addColorStop(0, 'rgba(0,0,0,0.23)'); shadow.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = shadow; ctx.fillRect(-1, -1, 2, 2); ctx.restore();
+    const faces = mesh.map(face => {
+      const points = face.points.map(transform), normal = transform(face.normal);
+      if (normal[2] < 0) for (let i = 0; i < 3; i++) normal[i] *= -1;
+      const diffuse = Math.max(0, normal.reduce((sum, v, i) => sum + v * light[i], 0));
+      const rim = Math.pow(1 - Math.abs(normal[2]), 3);
+      const surface = mix(mix(bg, ink, 0.38 + diffuse * 0.60), accent, rim * 0.16);
+      return { points, z: points.reduce((sum, a) => sum + a[2], 0) / 4, surface, edge: face.edge };
+    }).sort((a, b) => a.z - b.z);
+    ctx.lineJoin = 'round'; ctx.lineWidth = Math.max(1.05, scale * 0.004);
+    for (const face of faces) {
+      polygon(face.points); ctx.fillStyle = color(face.surface); ctx.strokeStyle = ctx.fillStyle;
+      ctx.fill(); ctx.stroke();
+      if (face.edge >= 0) {
+        const a = face.points[face.edge], b = face.points[(face.edge + 1) % 4];
+        ctx.beginPath(); ctx.moveTo(W / 2 + a[0] * scale, H * 0.47 - a[1] * scale);
+        ctx.lineTo(W / 2 + b[0] * scale, H * 0.47 - b[1] * scale);
+        ctx.strokeStyle = color(mix(face.surface, ink, 0.45)); ctx.stroke();
+      }
+    }
+  }
+
+  const normalize = p => ((p % 1) + 1) % 1;
+  const requestedPhase = Number.parseFloat(q.get('p') ?? '0');
+  let phase = Number.isFinite(requestedPhase) ? normalize(requestedPhase) : 0;
+  let frozen = q.has('p'), frameId = null, last = null;
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  window.__info = { seed, duration: DURATION, frames: 0 };
+
+  function stop() {
+    if (frameId !== null) cancelAnimationFrame(frameId);
+    frameId = null;
+    last = null;
+  }
+  // Rendering an export frame stops playback, including if called without ?p=.
+  window.renderFrame = (i, total) => {
+    if (!Number.isFinite(i) || !Number.isInteger(total) || total < 1)
+      throw new RangeError('renderFrame needs a finite frame index and a positive integer total');
+    stop();
+    frozen = true;
+    phase = normalize(i / total);
+    draw(phase);
+  };
+
+  function tick(now) {
+    frameId = null;
+    if (reduced.matches || frozen) return;
+    const dt = last === null ? 0 : Math.min((now - last) / 1000, 0.1);
+    last = now;
+    if (!document.hidden) {
+      phase = normalize(phase + dt / DURATION);
+      draw(phase);
+      window.__info.frames++;
+    }
+    frameId = requestAnimationFrame(tick);
+  }
+  function start() {
+    if (!reduced.matches && !frozen && frameId === null)
+      frameId = requestAnimationFrame(tick);
+  }
+  resize();
+  draw(phase);
+  addEventListener('resize', () => { resize(); draw(phase); });
+  reduced.addEventListener('change', () => {
+    stop();
+    draw(phase);
+    start();
+  });
+  addEventListener('keydown', event => {
+    if (event.code !== 'Space' || q.has('p') || reduced.matches) return;
+    event.preventDefault();
+    frozen = !frozen;
+    stop();
+    start();
+  });
+  // A reduced-motion preference or a requested phase draws one still, with no RAF.
+  if (reduced.matches || q.has('p')) return;
+  start();
+})();
+</script>
+</body>
+</html>

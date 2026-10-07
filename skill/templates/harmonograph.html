@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="motion-system" content="harmonograph">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harmonograph study</title>
+<!-- Loop: recompute a complete damped curve over fixed internal drawing time.
+     Only pendulum phase offsets follow the periodic animation clock.
+     Query: ?seed=N, ?p=0..1 for a still, ?t=seconds (default 18).
+     Optional palette: ?bg=RRGGBB&ink=RRGGBB&accent=RRGGBB. Space pauses. -->
+<style>
+  :root { --bg: #efe9dd; --ink: #263646; --accent: #9b6245; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c" role="img" aria-label="Fine indigo pendulum curves tapering inward on warm paper"></canvas>
+<script>
+(() => {
+  const q = new URLSearchParams(location.search);
+  const parsedSeed = Number.parseInt(q.get('seed') ?? '1', 10);
+  const seed = Number.isFinite(parsedSeed) ? parsedSeed >>> 0 : 1;
+  const parsedDuration = Number.parseFloat(q.get('t') ?? '18');
+  const DURATION = Number.isFinite(parsedDuration) && parsedDuration > 0 ? parsedDuration : 18;
+  for (const key of ['bg', 'ink', 'accent'])
+    if (/^(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(q.get(key) ?? ''))
+      document.documentElement.style.setProperty('--' + key, '#' + q.get(key));
+  const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  function mulberry32(a) {
+    return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  }
+  const rng = mulberry32(seed), TAU = Math.PI * 2;
+  const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  let W = 1, H = 1, dpr = 1;
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = Math.max(1, cv.clientWidth); H = Math.max(1, cv.clientHeight);
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  }
+  // Two coupled frequency pairs. Damping belongs to drawing time, not playback.
+  const pair = [[2, 3], [3, 4], [3, 5]][Math.floor(rng() * 3)];
+  const frequencies = [pair[0], pair[1], pair[0] + 0.008 + rng() * 0.012,
+    pair[1] + 0.006 + rng() * 0.01];
+  const offsets = [rng() * TAU, rng() * TAU, rng() * TAU, rng() * TAU];
+  const damping = 0.0038 + rng() * 0.0016;
+  const tilt = (rng() - 0.5) * 0.55;
+  const samples = 7200, interval = TAU * (27 + Math.floor(rng() * 7));
+  // Cache the static sine bases; frame work is linear combinations and one stroke.
+  const sine = [], cosine = [];
+  for (let j = 0; j < 4; j++) {
+    sine[j] = new Float32Array(samples + 1);
+    cosine[j] = new Float32Array(samples + 1);
+    for (let i = 0; i <= samples; i++) {
+      const time = interval * i / samples;
+      const envelope = Math.exp(-damping * time * (j % 2 ? 1.12 : 1));
+      sine[j][i] = Math.sin(frequencies[j] * time) * envelope;
+      cosine[j][i] = Math.cos(frequencies[j] * time) * envelope;
+    }
+  }
+  function draw(p) {
+    const theta = p * TAU;
+    const angles = [offsets[0] + 0.26 * Math.sin(theta), offsets[1] + 0.2 * Math.cos(theta),
+      offsets[2] + 0.23 * Math.sin(theta + 0.8), offsets[3] + 0.2 * Math.cos(theta + 0.8)];
+    const cs = angles.map(Math.cos), sn = angles.map(Math.sin);
+    const size = Math.min(W, H) * 0.43;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = css('--bg'); ctx.fillRect(0, 0, W, H);
+    ctx.translate(W / 2, H / 2); ctx.rotate(tilt);
+    ctx.strokeStyle = css('--ink');
+    ctx.globalAlpha = 0.74;
+    ctx.lineWidth = Math.max(0.45, Math.min(W, H) / 1250);
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    for (let i = 0; i <= samples; i++) {
+      const x = size * (0.58 * (sine[0][i] * cs[0] + cosine[0][i] * sn[0]) +
+        0.42 * (sine[1][i] * cs[1] + cosine[1][i] * sn[1]));
+      const y = size * (0.58 * (sine[2][i] * cs[2] + cosine[2][i] * sn[2]) +
+        0.42 * (sine[3][i] * cs[3] + cosine[3][i] * sn[3]));
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  const normalize = p => ((p % 1) + 1) % 1;
+  const requestedPhase = Number.parseFloat(q.get('p') ?? '0');
+  let phase = Number.isFinite(requestedPhase) ? normalize(requestedPhase) : 0;
+  let frozen = q.has('p'), frameId = null, last = null;
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  window.__info = { seed, duration: DURATION, frames: 0 };
+
+  function stop() {
+    if (frameId !== null) cancelAnimationFrame(frameId);
+    frameId = null;
+    last = null;
+  }
+  // Rendering an export frame stops playback, including if called without ?p=.
+  window.renderFrame = (i, total) => {
+    if (!Number.isFinite(i) || !Number.isInteger(total) || total < 1)
+      throw new RangeError('renderFrame needs a finite frame index and a positive integer total');
+    stop();
+    frozen = true;
+    phase = normalize(i / total);
+    draw(phase);
+  };
+
+  function tick(now) {
+    frameId = null;
+    if (reduced.matches || frozen) return;
+    const dt = last === null ? 0 : Math.min((now - last) / 1000, 0.1);
+    last = now;
+    if (!document.hidden) {
+      phase = normalize(phase + dt / DURATION);
+      draw(phase);
+      window.__info.frames++;
+    }
+    frameId = requestAnimationFrame(tick);
+  }
+  function start() {
+    if (!reduced.matches && !frozen && frameId === null)
+      frameId = requestAnimationFrame(tick);
+  }
+  resize();
+  draw(phase);
+  addEventListener('resize', () => { resize(); draw(phase); });
+  reduced.addEventListener('change', () => {
+    stop();
+    draw(phase);
+    start();
+  });
+  addEventListener('keydown', event => {
+    if (event.code !== 'Space' || q.has('p') || reduced.matches) return;
+    event.preventDefault();
+    frozen = !frozen;
+    stop();
+    start();
+  });
+  // A reduced-motion preference or a requested phase draws one still, with no RAF.
+  if (reduced.matches || q.has('p')) return;
+  start();
+})();
+</script>
+</body>
+</html>

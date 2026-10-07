@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="motion-system" content="flocking">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flocking studies</title>
+<!-- Loop: settle seeded separation, alignment and cohesion for 160 steps. Freeze
+     each group, then carry its offsets along a closed ellipse with tangent headings.
+     Query: ?seed=N, ?t=seconds (default 18), ?p=0..1 for a still.
+     Palette: ?bg=RRGGBB&ink=RRGGBB&accent=RRGGBB. Space pauses. -->
+<style>
+  :root { --bg: #f0ede4; --ink: #273d3e; --accent: #b75c3f; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c" role="img" aria-label="Five schools of fine brush marks moving around an open centre"></canvas>
+<script>
+(() => {
+
+  const TAU = Math.PI * 2;
+  const q = new URLSearchParams(location.search);
+  const parsedSeed = Number.parseInt(q.get('seed') ?? '1', 10);
+  const seed = Number.isFinite(parsedSeed) ? parsedSeed >>> 0 : 1;
+  const parsedDuration = Number.parseFloat(q.get('t') ?? '18');
+  const DURATION = Number.isFinite(parsedDuration) && parsedDuration > 0 ? parsedDuration : 18;
+  for (const key of ['bg', 'ink', 'accent'])
+    if (/^(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(q.get(key) ?? ''))
+      document.documentElement.style.setProperty('--' + key, '#' + q.get(key));
+  const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  function mulberry32(a) {
+    return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  }
+  const rng = mulberry32(seed);
+  const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  let W = 1, H = 1, scale = 1, dpr = 1;
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = Math.max(1, cv.clientWidth); H = Math.max(1, cv.clientHeight);
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    scale = Math.min(W / 1600, H / 900);
+  }
+
+  // Each school is a real, bounded boid warm-up. No simulation runs during draw.
+  const groups = Array.from({ length: 5 }, (_, group) => {
+    const count = 100 + Math.floor(rng() * 45), bend = (rng() - 0.5) * 0.8;
+    const members = Array.from({ length: count }, () => {
+      const x = (rng() - 0.5) * 2.7, y = (rng() - 0.5) * 0.8 + bend * Math.sin(x * 1.6);
+      return { x, y, vx: 0.018 + rng() * 0.004, vy: (rng() - 0.5) * 0.004,
+        length: 4.5 + rng() * 5.2, width: 0.8 + rng() * 0.7, accent: rng() < 0.13 };
+    });
+    const next = new Float64Array(count * 2);
+    for (let step = 0; step < 160; step++) {
+      let centerX = 0, centerY = 0;
+      for (const a of members) { centerX += a.x; centerY += a.y; }
+      centerX /= count; centerY /= count;
+      for (let i = 0; i < count; i++) {
+        const a = members[i];
+        let sx = 0, sy = 0, ax = 0, ay = 0, cx = 0, cy = 0, neighbors = 0;
+        for (let j = 0; j < count; j++) {
+          if (i === j) continue;
+          const b = members[j], dx = b.x - a.x, dy = b.y - a.y, dd = dx * dx + dy * dy;
+          if (dd < 0.22) { ax += b.vx; ay += b.vy; cx += dx; cy += dy; neighbors++; }
+          if (dd < 0.016 && dd > 0.000001) { sx -= dx / dd; sy -= dy / dd; }
+        }
+        const n = Math.max(1, neighbors);
+        let vx = a.vx + sx * 0.000065 + (ax / n - a.vx) * 0.075 + cx / n * 0.0012;
+        let vy = a.vy + sy * 0.000065 + (ay / n - a.vy) * 0.075 + cy / n * 0.0012;
+        // Weak confinement prevents an escaped member from spoiling the group silhouette.
+        vx += (centerX - a.x) * 0.000015 + (0.019 - a.vx) * 0.025;
+        vy += (centerY + bend * Math.sin((a.x - centerX) * 1.6) - a.y) * 0.00008;
+        const speed = Math.hypot(vx, vy), limit = Math.min(1, 0.026 / Math.max(speed, 0.0001));
+        next[i * 2] = vx * limit; next[i * 2 + 1] = vy * limit;
+      }
+      for (let i = 0; i < count; i++) {
+        const a = members[i]; a.vx = next[i * 2]; a.vy = next[i * 2 + 1]; a.x += a.vx; a.y += a.vy;
+      }
+    }
+    let cx = 0, cy = 0;
+    for (const a of members) { cx += a.x / count; cy += a.y / count; }
+    let span = 0;
+    for (const a of members) span = Math.max(span, Math.abs(a.x - cx));
+    const size = (group === 0 ? 190 : 135) + rng() * 25;
+    for (const a of members) {
+      a.x = (a.x - cx) / span * size;
+      a.y = (a.y - cy) / span * size;
+      a.heading = Math.atan2(a.vy, a.vx) * 0.7;
+    }
+    // Cache marks in four width/color batches: only 25 strokes per frame.
+    const paths = Array.from({ length: 4 }, () => new Path2D()), tails = new Path2D();
+    for (const a of members) {
+      const dx = Math.cos(a.heading), dy = Math.sin(a.heading), length = a.length;
+      const path = paths[(a.accent ? 2 : 0) + (a.width > 1.15 ? 1 : 0)];
+      path.moveTo(a.x - dx * length * 0.6, a.y - dy * length * 0.6);
+      path.quadraticCurveTo(a.x - dy * 1.5, a.y + dx * 1.5, a.x + dx * length * 0.4, a.y + dy * length * 0.4);
+      tails.moveTo(a.x - dx * length, a.y - dy * length);
+      tails.lineTo(a.x - dx * length * 0.5, a.y - dy * length * 0.5);
+    }
+    return { paths, tails, offset: group / 5 + (rng() - 0.5) * 0.035,
+      radius: 0.94 + rng() * 0.1 };
+  });
+  const origin = rng() * TAU, inclination = (rng() - 0.5) * 0.17;
+
+  function draw(p) {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = css('--bg'); ctx.fillRect(0, 0, W, H);
+    const ink = css('--ink'), accent = css('--accent');
+    // Responsive ellipses retain breathing room on both wide and tall canvases.
+    const unit = Math.min(W / 1600, H / 900), radiusX = W * 0.30, radiusY = H * 0.29;
+    ctx.lineCap = 'round';
+    for (const group of groups) {
+      const t = TAU * (p + group.offset) + origin;
+      const x = W / 2 + Math.cos(t) * radiusX * group.radius;
+      const y = H / 2 + Math.sin(t) * radiusY * group.radius;
+      const heading = Math.atan2(radiusY * Math.cos(t), -radiusX * Math.sin(t)) + inclination;
+      const c = Math.cos(heading), s = Math.sin(heading);
+      ctx.setTransform(dpr * unit * c, dpr * unit * s, -dpr * unit * s, dpr * unit * c, dpr * x, dpr * y);
+      // Tapered quadratic strokes read as ink, rather than identical particle dots.
+      for (let j = 0; j < 4; j++) {
+        ctx.strokeStyle = j < 2 ? ink : accent;
+        ctx.globalAlpha = j < 2 ? 0.78 : 0.88;
+        ctx.lineWidth = j % 2 ? 1.35 : 0.95;
+        ctx.stroke(group.paths[j]);
+      }
+      ctx.strokeStyle = ink; ctx.globalAlpha = 0.18; ctx.lineWidth = 0.45;
+      ctx.stroke(group.tails);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  const normalize = p => ((p % 1) + 1) % 1;
+  const requestedPhase = Number.parseFloat(q.get('p') ?? '0');
+  let phase = Number.isFinite(requestedPhase) ? normalize(requestedPhase) : 0;
+  let frozen = q.has('p'), frameId = null, last = null;
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  window.__info = { seed, duration: DURATION, frames: 0 };
+
+  function stop() {
+    if (frameId !== null) cancelAnimationFrame(frameId);
+    frameId = null;
+    last = null;
+  }
+  // Rendering an export frame stops playback, including if called without ?p=.
+  window.renderFrame = (i, total) => {
+    if (!Number.isFinite(i) || !Number.isInteger(total) || total < 1)
+      throw new RangeError('renderFrame needs a finite frame index and a positive integer total');
+    stop();
+    frozen = true;
+    phase = normalize(i / total);
+    draw(phase);
+  };
+
+  function tick(now) {
+    frameId = null;
+    if (reduced.matches || frozen) return;
+    const dt = last === null ? 0 : Math.min((now - last) / 1000, 0.1);
+    last = now;
+    if (!document.hidden) {
+      phase = normalize(phase + dt / DURATION);
+      draw(phase);
+      window.__info.frames++;
+    }
+    frameId = requestAnimationFrame(tick);
+  }
+  function start() {
+    if (!reduced.matches && !frozen && frameId === null)
+      frameId = requestAnimationFrame(tick);
+  }
+  resize();
+  draw(phase);
+  addEventListener('resize', () => { resize(); draw(phase); });
+  reduced.addEventListener('change', () => {
+    stop();
+    draw(phase);
+    start();
+  });
+  addEventListener('keydown', event => {
+    if (event.code !== 'Space' || q.has('p') || reduced.matches) return;
+    event.preventDefault();
+    frozen = !frozen;
+    stop();
+    start();
+  });
+  // A reduced-motion preference or a requested phase draws one still, with no RAF.
+  if (reduced.matches || q.has('p')) return;
+  start();
+})();
+</script>
+</body>
+</html>

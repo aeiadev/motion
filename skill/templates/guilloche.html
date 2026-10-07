@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="motion-system" content="guilloche">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guilloche medallion</title>
+<!-- Loop: draw complete hypotrochoids with fixed integer frequency ratios.
+     Phase offsets advance by integer multiples of the loop angle.
+     Query: ?seed=N, ?p=0..1 for a still, ?t=seconds (default 18).
+     Optional palette: ?bg=RRGGBB&ink=RRGGBB&accent=RRGGBB. Space pauses. -->
+<style>
+  :root { --bg: #132c2a; --ink: #c6cbb5; --accent: #c79c67; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c" role="img" aria-label="Interlocking engraved rosette bands in pale gold on deep green"></canvas>
+<script>
+(() => {
+  const q = new URLSearchParams(location.search);
+  const parsedSeed = Number.parseInt(q.get('seed') ?? '1', 10);
+  const seed = Number.isFinite(parsedSeed) ? parsedSeed >>> 0 : 1;
+  const parsedDuration = Number.parseFloat(q.get('t') ?? '18');
+  const DURATION = Number.isFinite(parsedDuration) && parsedDuration > 0 ? parsedDuration : 18;
+  for (const key of ['bg', 'ink', 'accent'])
+    if (/^(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(q.get(key) ?? ''))
+      document.documentElement.style.setProperty('--' + key, '#' + q.get(key));
+  const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  function mulberry32(a) {
+    return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  }
+  const rng = mulberry32(seed), TAU = Math.PI * 2;
+  const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  let W = 1, H = 1, dpr = 1;
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = Math.max(1, cv.clientWidth); H = Math.max(1, cv.clientHeight);
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  }
+  const petals = 8 + Math.floor(rng() * 6), frequency = petals - 1;
+  const orientation = rng() * TAU;
+  const phaseOffset = rng() * TAU;
+  const depth = 0.16 + rng() * 0.045;
+  const samples = 1440;
+  const ct = new Float32Array(samples + 1), st = new Float32Array(samples + 1);
+  const cf = new Float32Array(samples + 1), sf = new Float32Array(samples + 1);
+  for (let i = 0; i <= samples; i++) {
+    const a = i * TAU / samples;
+    ct[i] = Math.cos(a); st[i] = Math.sin(a);
+    cf[i] = Math.cos(frequency * a); sf[i] = Math.sin(frequency * a);
+  }
+  function draw(p) {
+    const theta = p * TAU, radius = Math.min(W, H) * 0.44;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = css('--bg'); ctx.fillRect(0, 0, W, H);
+    ctx.translate(W / 2, H / 2); ctx.rotate(orientation);
+    ctx.lineWidth = Math.max(0.4, Math.min(W, H) / 1600);
+    ctx.lineJoin = 'round';
+    const ink = css('--ink'), accent = css('--accent');
+    // Offset families remain unfilled. Their intersections form the engraved band.
+    for (let family = 0; family < 2; family++) {
+      const count = family === 0 ? 24 : 14;
+      for (let band = 0; band < count; band++) {
+        const f = band / (count - 1) - 0.5;
+        const r = radius * (family === 0 ? 0.7 + f * 0.064 : 0.32 + f * 0.04);
+        const d = radius * (family === 0 ? depth : depth * 0.46);
+        const a = phaseOffset + (family === 0 ? theta : -theta) + f * 1.2;
+        const ca = Math.cos(a), sa = Math.sin(a);
+        ctx.strokeStyle = band % 7 === 0 ? accent : ink;
+        ctx.globalAlpha = family === 0 ? 0.7 : 0.6;
+        ctx.beginPath();
+        for (let i = 0; i <= samples; i++) {
+          const x = r * ct[i] + d * (cf[i] * ca - sf[i] * sa);
+          const y = r * st[i] - d * (sf[i] * ca + cf[i] * sa);
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.closePath(); ctx.stroke();
+      }
+    }
+    ctx.strokeStyle = accent;
+    ctx.globalAlpha = 0.58;
+    for (const r of [0.974, 0.99, 0.16, 0.17]) {
+      ctx.beginPath(); ctx.arc(0, 0, radius * r, 0, TAU); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  const normalize = p => ((p % 1) + 1) % 1;
+  const requestedPhase = Number.parseFloat(q.get('p') ?? '0');
+  let phase = Number.isFinite(requestedPhase) ? normalize(requestedPhase) : 0;
+  let frozen = q.has('p'), frameId = null, last = null;
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  window.__info = { seed, duration: DURATION, frames: 0 };
+
+  function stop() {
+    if (frameId !== null) cancelAnimationFrame(frameId);
+    frameId = null;
+    last = null;
+  }
+  // Rendering an export frame stops playback, including if called without ?p=.
+  window.renderFrame = (i, total) => {
+    if (!Number.isFinite(i) || !Number.isInteger(total) || total < 1)
+      throw new RangeError('renderFrame needs a finite frame index and a positive integer total');
+    stop();
+    frozen = true;
+    phase = normalize(i / total);
+    draw(phase);
+  };
+
+  function tick(now) {
+    frameId = null;
+    if (reduced.matches || frozen) return;
+    const dt = last === null ? 0 : Math.min((now - last) / 1000, 0.1);
+    last = now;
+    if (!document.hidden) {
+      phase = normalize(phase + dt / DURATION);
+      draw(phase);
+      window.__info.frames++;
+    }
+    frameId = requestAnimationFrame(tick);
+  }
+  function start() {
+    if (!reduced.matches && !frozen && frameId === null)
+      frameId = requestAnimationFrame(tick);
+  }
+  resize();
+  draw(phase);
+  addEventListener('resize', () => { resize(); draw(phase); });
+  reduced.addEventListener('change', () => {
+    stop();
+    draw(phase);
+    start();
+  });
+  addEventListener('keydown', event => {
+    if (event.code !== 'Space' || q.has('p') || reduced.matches) return;
+    event.preventDefault();
+    frozen = !frozen;
+    stop();
+    start();
+  });
+  // A reduced-motion preference or a requested phase draws one still, with no RAF.
+  if (reduced.matches || q.has('p')) return;
+  start();
+})();
+</script>
+</body>
+</html>

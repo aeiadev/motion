@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="motion-system" content="stamp-grid">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stamp grid</title>
+<!-- Loop: two seeded symbol arrangements blend with a cosine weight and fixed cell phases.
+     Four symbols only: disc, half-disc, quarter-annulus, and parallel bars.
+     Stamp texture is baked once; all frames reuse the same seeded marks.
+     Query: ?seed=N, ?t=seconds, ?p=0..1 for a still.
+     Palette: ?bg=RRGGBB&ink=RRGGBB&accent=RRGGBB. Space pauses playback. -->
+<style>
+  :root { --bg: #eee9dc; --ink: #263f43; --accent: #ba593d; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c" role="img" aria-label="A changing grid of four ink-stamped geometric symbols on warm paper"></canvas>
+<script>
+(() => {
+  const q = new URLSearchParams(location.search);
+  const parsedSeed = Number.parseInt(q.get('seed') ?? '1', 10);
+  const seed = Number.isFinite(parsedSeed) ? parsedSeed >>> 0 : 1;
+  const parsedDuration = Number.parseFloat(q.get('t') ?? '16');
+  const DURATION = Number.isFinite(parsedDuration) && parsedDuration > 0 ? parsedDuration : 16;
+  for (const key of ['bg', 'ink', 'accent'])
+    if (/^(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(q.get(key) ?? ''))
+      document.documentElement.style.setProperty('--' + key, '#' + q.get(key));
+  const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  function mulberry32(a) {
+    return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  }
+  const cv = document.getElementById('c'), ctx = cv.getContext('2d', { alpha: false });
+
+  const TAU = Math.PI * 2;
+  let W = 1, H = 1, dpr = 1, size = 1, cells = [], stamps = [], palette = '';
+  // Four reusable stamp silhouettes. Texture adds tiny paper pores, never extra symbols.
+  function makeStamps() {
+    const colors = [css('--ink'), css('--accent')];
+    const rasterSize = Math.max(8, Math.round(size * 1.03 * dpr));
+    const key = colors.join('|') + '|' + rasterSize;
+    if (palette === key && stamps.length) return;
+    palette = key;
+    stamps = colors.map((color, colorIndex) => Array.from({ length: 4 }, (_, symbol) => {
+      const stamp = typeof OffscreenCanvas === 'function' ? new OffscreenCanvas(192, 192) : document.createElement('canvas');
+      stamp.width = stamp.height = 192;
+      const g = stamp.getContext('2d'), r = mulberry32(seed ^ (symbol + 1) * 104729 ^ colorIndex * 7919);
+      g.translate(96, 96);
+      g.fillStyle = color;
+      g.beginPath();
+      if (symbol === 0) {
+        g.arc(0, 0, 73, 0, TAU);
+      } else if (symbol === 1) {
+        g.arc(0, 0, 74, Math.PI, 0);
+        g.lineTo(74, 0); g.lineTo(-74, 0); g.closePath();
+      } else if (symbol === 2) {
+        g.arc(-68, -68, 142, 0, Math.PI / 2);
+        g.lineTo(-68, -3);
+        g.arc(-68, -68, 65, Math.PI / 2, 0, true); g.closePath();
+      } else {
+        for (let j = 0; j < 3; j++) g.rect(-68, -66 + j * 46, 136, 28);
+      }
+      g.fill();
+      // Fine, fixed pinholes suggest an unevenly inked block.
+      g.globalCompositeOperation = 'destination-out';
+      for (let i = 0; i < 670; i++) {
+        g.globalAlpha = 0.12 + r() * 0.32;
+        const x = r() * 180 - 90, y = r() * 180 - 90, radius = 0.18 + r() * 0.75;
+        g.beginPath(); g.arc(x, y, radius, 0, TAU); g.fill();
+      }
+      return Array.from({ length: 4 }, (_, turn) => {
+        const rotated = typeof OffscreenCanvas === 'function' ? new OffscreenCanvas(rasterSize, rasterSize) : document.createElement('canvas');
+        rotated.width = rotated.height = rasterSize;
+        const brush = rotated.getContext('2d');
+        brush.translate(rasterSize / 2, rasterSize / 2);
+        brush.rotate(turn * Math.PI / 2);
+        brush.drawImage(stamp, -rasterSize / 2, -rasterSize / 2, rasterSize, rasterSize);
+        return typeof rotated.transferToImageBitmap === 'function' ? rotated.transferToImageBitmap() : rotated;
+      });
+    }));
+  }
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = Math.max(1, cv.clientWidth); H = Math.max(1, cv.clientHeight);
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    const cols = Math.max(4, Math.min(18, Math.round(14 * W / H / (16 / 9)))), rows = 8;
+    size = Math.min(W * 0.90 / cols, H * 0.86 / rows);
+    const x0 = (W - cols * size) / 2, y0 = (H - rows * size) / 2;
+    const r = mulberry32(seed), shift = (r() * 4) | 0, band = 2 + ((r() * 3) | 0);
+    const motifs = Array.from({ length: 8 }, () => (r() * 4) | 0);
+    cells = [];
+    for (let row = 0; row < rows; row++) for (let col = 0; col < cols; col++) {
+      const motif = (Math.floor(col / band) + Math.floor(row / 2) + shift) % motifs.length;
+      const a = (motifs[motif] + (r() < 0.18 ? 1 : 0)) % 4;
+      const b = (a + 1 + ((r() * 3) | 0)) % 4;
+      cells.push({ x: x0 + (col + 0.5) * size, y: y0 + (row + 0.5) * size,
+        a, b, rotation: (row + col + shift + (r() < 0.22 ? 1 : 0)) % 4,
+        turn: r() < 0.5 ? 1 : 3,
+        phase: (col / Math.max(1, cols - 1) * 0.32 + row * 0.035 + r() * 0.09) * TAU,
+        accent: (row + Math.floor(col / band) + shift) % 5 === 0 ? 1 : 0,
+        density: 0.86 + r() * 0.14, dx: (r() - 0.5) * 0.015, dy: (r() - 0.5) * 0.015 });
+    }
+    makeStamps();
+  }
+  function draw(p) {
+    makeStamps();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.globalAlpha = 1; ctx.fillStyle = css('--bg'); ctx.fillRect(0, 0, W, H);
+    const theta = p * TAU;
+    // Native-size, pre-rotated sprites keep stamp filtering out of live frames.
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    for (const cell of cells) {
+      const w = (1 - Math.cos(theta + cell.phase)) / 2;
+      const first = stamps[cell.accent][cell.a][cell.rotation];
+      const second = stamps[cell.accent][cell.b][(cell.rotation + cell.turn) % 4];
+      const x = Math.round((cell.x + cell.dx * size) * dpr - first.width / 2);
+      const y = Math.round((cell.y + cell.dy * size) * dpr - first.height / 2);
+      ctx.globalAlpha = cell.density * (1 - w);
+      ctx.drawImage(first, x, y);
+      ctx.globalAlpha = cell.density * w;
+      ctx.drawImage(second, x, y);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  const normalize = p => ((p % 1) + 1) % 1;
+  const requestedPhase = Number.parseFloat(q.get('p') ?? '0');
+  let phase = Number.isFinite(requestedPhase) ? normalize(requestedPhase) : 0;
+  let frozen = q.has('p'), frameId = null, last = null;
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  window.__info = { seed, duration: DURATION, frames: 0 };
+
+  function stop() {
+    if (frameId !== null) cancelAnimationFrame(frameId);
+    frameId = null;
+    last = null;
+  }
+  // Rendering an export frame stops playback, including if called without ?p=.
+  window.renderFrame = (i, total) => {
+    if (!Number.isFinite(i) || !Number.isInteger(total) || total < 1)
+      throw new RangeError('renderFrame needs a finite frame index and a positive integer total');
+    stop();
+    frozen = true;
+    phase = normalize(i / total);
+    draw(phase);
+  };
+
+  function tick(now) {
+    frameId = null;
+    if (reduced.matches || frozen) return;
+    const dt = last === null ? 0 : Math.min((now - last) / 1000, 0.1);
+    last = now;
+    if (!document.hidden) {
+      phase = normalize(phase + dt / DURATION);
+      draw(phase);
+      window.__info.frames++;
+    }
+    frameId = requestAnimationFrame(tick);
+  }
+  function start() {
+    if (!reduced.matches && !frozen && frameId === null)
+      frameId = requestAnimationFrame(tick);
+  }
+  resize();
+  draw(phase);
+  addEventListener('resize', () => { resize(); draw(phase); });
+  reduced.addEventListener('change', () => {
+    stop();
+    draw(phase);
+    start();
+  });
+  addEventListener('keydown', event => {
+    if (event.code !== 'Space' || q.has('p') || reduced.matches) return;
+    event.preventDefault();
+    frozen = !frozen;
+    stop();
+    start();
+  });
+  // A reduced-motion preference or a requested phase draws one still, with no RAF.
+  if (reduced.matches || q.has('p')) return;
+  start();
+})();
+</script>
+</body>
+</html>

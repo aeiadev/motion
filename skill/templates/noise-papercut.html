@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="motion-system" content="noise-papercut">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Noise paper cut</title>
+<!-- Loop: ten fixed-order layers sample seeded spatial noise on a closed phase
+     circle. Small layer offsets are periodic; the shadow direction stays fixed.
+     Query: ?seed=N, ?p=0..1 for a still, ?t=seconds. Space pauses playback.
+     Optional palette: ?bg=RRGGBB&ink=RRGGBB&accent=RRGGBB. No texture overlay. -->
+<style>
+  :root { --bg: #eee7dc; --ink: #3f554d; --accent: #b96d54; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c" role="img" aria-label="Ten softly shadowed layers of muted paper with gently changing irregular edges"></canvas>
+<script>
+(() => {
+  const TAU = Math.PI * 2, LAYERS = 10, POINTS = 160;
+  const q = new URLSearchParams(location.search);
+  const parsedSeed = Number.parseInt(q.get('seed') ?? '1', 10);
+  const seed = Number.isFinite(parsedSeed) ? parsedSeed >>> 0 : 1;
+  const parsedDuration = Number.parseFloat(q.get('t') ?? '18');
+  const DURATION = Number.isFinite(parsedDuration) && parsedDuration > 0 ? parsedDuration : 18;
+  for (const key of ['bg', 'ink', 'accent'])
+    if (/^(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(q.get(key) ?? ''))
+      document.documentElement.style.setProperty('--' + key, '#' + q.get(key));
+  const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  function mulberry32(a) {
+    return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  }
+  const random = mulberry32(seed), values = new Float32Array(4096);
+  for (let i = 0; i < values.length; i++) values[i] = random();
+  const fade = t => t * t * t * (t * (t * 6 - 15) + 10);
+  function noise(x, y) {
+    const ix = Math.floor(x), iy = Math.floor(y), u = fade(x - ix), v = fade(y - iy);
+    const a = values[(ix & 63) + ((iy & 63) << 6)];
+    const b = values[((ix + 1) & 63) + ((iy & 63) << 6)];
+    const c = values[(ix & 63) + (((iy + 1) & 63) << 6)];
+    const d = values[((ix + 1) & 63) + (((iy + 1) & 63) << 6)];
+    return a + (b - a) * u + (c - a + (d - c - b + a) * u) * v;
+  }
+  const fieldX = random() * 40, fieldY = random() * 40, tilt = random() * TAU;
+  const lean = random() * TAU, broadness = 0.7 + random() * 0.5;
+  const layers = Array.from({ length: LAYERS }, (_, i) => ({
+    radius: 402 - i * 34,
+    phase: random() * TAU,
+    x: Math.cos(lean) * (i - 4.5) * 2.1 + (random() - 0.5) * 4,
+    y: Math.sin(lean) * (i - 4.5) * 2.1 + (random() - 0.5) * 4,
+    field: i * 0.075,
+  }));
+  const directions = Array.from({ length: POINTS }, (_, i) => {
+    const angle = TAU * i / POINTS;
+    return { x: Math.cos(angle), y: Math.sin(angle), oval: Math.cos(angle * 2 + tilt) };
+  });
+  const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  const colorCanvas = document.createElement('canvas');
+  colorCanvas.width = colorCanvas.height = 1;
+  const colorContext = colorCanvas.getContext('2d', { willReadFrequently: true });
+  function rgb(color) {
+    colorContext.fillStyle = color;
+    colorContext.fillRect(0, 0, 1, 1);
+    return Array.from(colorContext.getImageData(0, 0, 1, 1).data).slice(0, 3);
+  }
+  const mix = (a, b, t) => 'rgb(' + a.map((v, i) => Math.round(v + (b[i] - v) * t)).join(',') + ')';
+  let scale = 1, background, colors, highlight;
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cv.width = Math.max(1, Math.round(cv.clientWidth * dpr));
+    cv.height = Math.max(1, Math.round(cv.clientHeight * dpr));
+    scale = Math.min(cv.width, cv.height) / 1000;
+    background = css('--bg');
+    const bg = rgb(background), ink = rgb(css('--ink')), accent = rgb(css('--accent'));
+    colors = [mix(bg, accent, 0.4), mix(bg, accent, 0.69), mix(bg, accent, 0.97),
+      mix(accent, ink, 0.2), mix(bg, ink, 0.25), mix(bg, ink, 0.45),
+      mix(bg, ink, 0.68), mix(bg, ink, 0.87), mix(bg, accent, 0.26), mix(bg, accent, 0.56)];
+    highlight = mix(bg, [255, 255, 255], 0.55);
+  }
+  function draw(p) {
+    const theta = TAU * p, px = 0.45 * Math.cos(theta), py = 0.45 * Math.sin(theta);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = background;
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.setTransform(scale, 0, 0, scale, cv.width / 2, cv.height / 2);
+    for (let i = 0; i < LAYERS; i++) {
+      const layer = layers[i], contour = new Path2D();
+      const x = layer.x + 2.5 * Math.cos(theta + layer.phase);
+      const y = layer.y + 2.5 * Math.sin(theta + layer.phase);
+      for (let j = 0; j < POINTS; j++) {
+        const d = directions[j];
+        const n = noise(fieldX + d.x * 2.6 + px + layer.field,
+          fieldY + d.y * 2.6 + py + layer.field);
+        const detail = noise(fieldX + d.x * 7 + px, fieldY + d.y * 7 + py);
+        // Shared low-frequency shape plus small edge details, always below
+        // the inter-layer gap, makes a cut-paper stack without crossings.
+        const r = layer.radius * (1 + d.oval * 0.045 * broadness)
+          + (n - 0.5) * 43 + (detail - 0.5) * 4;
+        const cx = x + d.x * r, cy = y + d.y * r;
+        if (j === 0) contour.moveTo(cx, cy); else contour.lineTo(cx, cy);
+      }
+      contour.closePath();
+      // Two faint offset silhouettes soften a shallow fixed-direction shadow.
+      // They avoid a full-canvas blur on every layer and every animation frame.
+      ctx.save();
+      ctx.translate(2.8, 5.5);
+      ctx.fillStyle = 'rgba(33,29,23,0.055)';
+      ctx.fill(contour);
+      ctx.translate(-1.1, -1.9);
+      ctx.fillStyle = 'rgba(33,29,23,0.09)';
+      ctx.fill(contour);
+      ctx.restore();
+      ctx.fillStyle = colors[i];
+      ctx.fill(contour);
+      ctx.strokeStyle = highlight;
+      ctx.globalAlpha = 0.22;
+      ctx.lineWidth = 0.8;
+      ctx.stroke(contour);
+      ctx.globalAlpha = 1;
+    }
+  }
+  const normalize = p => ((p % 1) + 1) % 1;
+  const requestedPhase = Number.parseFloat(q.get('p') ?? '0');
+  let phase = Number.isFinite(requestedPhase) ? normalize(requestedPhase) : 0;
+  let frozen = q.has('p'), frameId = null, last = null;
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  window.__info = { seed, duration: DURATION, frames: 0 };
+  function stop() {
+    if (frameId !== null) cancelAnimationFrame(frameId);
+    frameId = null;
+    last = null;
+  }
+  window.renderFrame = (i, total) => {
+    if (!Number.isFinite(i) || !Number.isInteger(total) || total < 1)
+      throw new RangeError('renderFrame needs a finite frame index and a positive integer total');
+    stop();
+    frozen = true;
+    phase = normalize(i / total);
+    draw(phase);
+  };
+  function tick(now) {
+    frameId = null;
+    if (reduced.matches || frozen) return;
+    const dt = last === null ? 0 : Math.min((now - last) / 1000, 0.1);
+    last = now;
+    if (!document.hidden) {
+      phase = normalize(phase + dt / DURATION);
+      draw(phase);
+      window.__info.frames++;
+    }
+    frameId = requestAnimationFrame(tick);
+  }
+  function start() {
+    if (!reduced.matches && !frozen && frameId === null) frameId = requestAnimationFrame(tick);
+  }
+  resize();
+  draw(phase);
+  addEventListener('resize', () => { resize(); draw(phase); });
+  reduced.addEventListener('change', () => { stop(); draw(phase); start(); });
+  addEventListener('keydown', event => {
+    if (event.code !== 'Space' || q.has('p') || reduced.matches) return;
+    event.preventDefault();
+    frozen = !frozen;
+    stop();
+    start();
+  });
+  if (reduced.matches || q.has('p')) return;
+  start();
+})();
+</script>
+</body>
+</html>

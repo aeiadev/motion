@@ -1,0 +1,4 @@
+title = "motion secret scanning"
+
+[extend]
+useDefault = true

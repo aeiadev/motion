@@ -1,0 +1,29 @@
+[
+  {"slug":"aizawa","name":"Aizawa attractor","file":"templates/aizawa.html"},
+  {"slug":"lorenz","name":"Lorenz attractor","file":"templates/lorenz.html"},
+  {"slug":"clifford","name":"Clifford attractor","file":"templates/clifford.html"},
+
+  {"slug":"flow-field","name":"Flow field","file":"templates/flow-field.html"},
+  {"slug":"thread-bundles","name":"Thread bundles","file":"templates/thread-bundles.html"},
+  {"slug":"noise-ridgelines","name":"Noise ridgelines","file":"templates/noise-ridgelines.html"},
+  {"slug":"noise-rings","name":"Noise rings","file":"templates/noise-rings.html"},
+
+  {"slug":"flocking","name":"Flocking","file":"templates/flocking.html"},
+  {"slug":"slime-mould","name":"Slime mould","file":"templates/slime-mould.html"},
+  {"slug":"differential-growth","name":"Differential growth","file":"templates/differential-growth.html"},
+  {"slug":"reaction-diffusion","name":"Reaction-diffusion","file":"templates/reaction-diffusion.html"},
+
+  {"slug":"ring-stack","name":"Ring stack","file":"templates/ring-stack.html"},
+  {"slug":"looped-strip","name":"Looped strip","file":"templates/looped-strip.html"},
+  {"slug":"soft-bodies","name":"Soft bodies","file":"templates/soft-bodies.html"},
+  {"slug":"metaballs","name":"Metaballs","file":"templates/metaballs.html"},
+  {"slug":"raymarching","name":"Raymarching","file":"templates/raymarching.html"},
+  {"slug":"noise-papercut","name":"Noise paper cut","file":"templates/noise-papercut.html"},
+
+  {"slug":"stamp-grid","name":"Stamp grid","file":"templates/stamp-grid.html"},
+  {"slug":"voronoi","name":"Voronoi relaxation","file":"templates/voronoi.html"},
+  {"slug":"halftone","name":"Halftone","file":"templates/halftone.html"},
+  {"slug":"moire","name":"Moire","file":"templates/moire.html"},
+  {"slug":"harmonograph","name":"Harmonograph","file":"templates/harmonograph.html"},
+  {"slug":"guilloche","name":"Guilloche","file":"templates/guilloche.html"}
+]

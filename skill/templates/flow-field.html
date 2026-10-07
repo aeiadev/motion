@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="motion-system" content="flow-field">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flow field hero</title>
+<!-- Motion template. Query: ?seed=N (default 1), ?t=seconds (default 12), ?p=0..1 for a still.
+     Optional palette: ?bg=RRGGBB&ink=RRGGBB&accent=RRGGBB. Space pauses playback.
+     Inline code only. Each frame is computed from its seed and loop phase. -->
+<style>
+  :root {
+    /* Default colours; query parameters can replace these swatches. */
+    --bg: #f3ecdf;
+    --ink: #16130f;
+    --accent: #b5452b;
+    --line-width: 1.4;     /* px at 1600 wide */
+    --margin: 40;          /* px keep-out border at 1600x900 */
+  }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c" role="img" aria-label="Animated flow field background"></canvas>
+<script>
+(() => {
+  const W = 1600, H = 900, THREADS = 420, STEPS = 70, STEP_LEN = 7;
+  const q = new URLSearchParams(location.search);
+  const parsedSeed = Number.parseInt(q.get('seed') ?? '1', 10);
+  const seed = Number.isFinite(parsedSeed) ? parsedSeed >>> 0 : 1;
+  const parsedDuration = Number.parseFloat(q.get('t') ?? '12');
+  const DURATION = Number.isFinite(parsedDuration) && parsedDuration > 0 ? parsedDuration : 12;
+  for (const k of ['bg', 'ink', 'accent'])
+    if (/^(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(q.get(k) ?? ''))
+      document.documentElement.style.setProperty('--' + k, '#' + q.get(k));
+  const FB = { '--bg': '#f3ecdf', '--ink': '#16130f', '--accent': '#b5452b' };   // Use these colours when a CSS property is empty.
+  const css = n => getComputedStyle(cv).getPropertyValue(n).trim() || FB[n] || '';
+
+  function mulberry32(a) {
+    return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  }
+  // seeded 2D value noise (quintic), periodic lattice via permutation table
+  const rng = mulberry32(seed);
+  const P = new Uint8Array(512), V = new Float32Array(256);
+  for (let i = 0; i < 256; i++) { P[i] = i; V[i] = rng(); }
+  for (let i = 255; i > 0; i--) { const j = (rng() * (i + 1)) | 0; [P[i], P[j]] = [P[j], P[i]]; }
+  for (let i = 0; i < 256; i++) P[i + 256] = P[i];
+  const fade = t => t * t * t * (t * (t * 6 - 15) + 10);
+  function noise(x, y) {
+    const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+    const X = xi & 255, Y = yi & 255, u = fade(xf), v = fade(yf);
+    const a = V[P[P[X] + Y]], b = V[P[P[X + 1] + Y]], c = V[P[P[X] + Y + 1]], d = V[P[P[X + 1] + Y + 1]];
+    return (a + (b - a) * u) + ((c + (d - c) * u) - (a + (b - a) * u)) * v;
+  }
+  // seeded thread starts and per-thread traits (same every frame: stateless render)
+  const r2 = mulberry32(seed * 7919 + 13);
+  const T = Array.from({ length: THREADS }, () => ({ x: r2() * W, y: r2() * H, w: 0.5 + r2(), acc: r2() < 0.12 }));
+  const phaseOff = r2() * 10, scale = 0.0016 + r2() * 0.0012, swirl = 5 + r2() * 3, R = 1.1;
+
+  const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  let dpr = 1, k = 1, ox = 0, oy = 0;
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cv.width = Math.round(cv.clientWidth * dpr); cv.height = Math.round(cv.clientHeight * dpr);
+    k = Math.max(cv.width / W, cv.height / H);          // cover
+    ox = (cv.width - W * k) / 2; oy = (cv.height - H * k) / 2;
+  }
+
+  function draw(p) {                                     // p in [0,1): periodic phase
+    const th = p * Math.PI * 2, cx = Math.cos(th) * R, cy = Math.sin(th) * R;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = css('--bg'); ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.setTransform(k, 0, 0, k, ox, oy);
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    const lw = parseFloat(css('--line-width')) || 1.4, m = parseFloat(css('--margin')) || 0;
+    const ink = css('--ink'), accent = css('--accent');
+    for (const t of T) {
+      ctx.strokeStyle = t.acc ? accent : ink;
+      let x = t.x, y = t.y;
+      for (let s = 0; s < STEPS; s++) {
+        const ang = noise(x * scale + cx + phaseOff, y * scale + cy) * swirl;
+        const nx = x + Math.cos(ang) * STEP_LEN, ny = y + Math.sin(ang) * STEP_LEN;
+        if (nx < m || nx > W - m || ny < m || ny > H - m) break;
+        const f = Math.sin(Math.PI * s / (STEPS - 1));   // taper ends
+        ctx.globalAlpha = 0.15 + 0.75 * f;
+        ctx.lineWidth = lw * t.w * (0.35 + f);
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(nx, ny); ctx.stroke();
+        x = nx; y = ny;
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  const normalize = p => ((p % 1) + 1) % 1;
+  const requestedPhase = Number.parseFloat(q.get('p') ?? '0');
+  let phase = Number.isFinite(requestedPhase) ? normalize(requestedPhase) : 0;
+  let frozen = q.has('p'), frameId = null, last = null;
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  window.__info = { seed, duration: DURATION, frames: 0 };
+
+  function stop() {
+    if (frameId !== null) cancelAnimationFrame(frameId);
+    frameId = null;
+    last = null;
+  }
+  // Rendering an export frame stops playback, including if called without ?p=.
+  window.renderFrame = (i, total) => {
+    if (!Number.isFinite(i) || !Number.isInteger(total) || total < 1)
+      throw new RangeError('renderFrame needs a finite frame index and a positive integer total');
+    stop();
+    frozen = true;
+    phase = normalize(i / total);
+    draw(phase);
+  };
+
+  function tick(now) {
+    frameId = null;
+    if (reduced.matches || frozen) return;
+    const dt = last === null ? 0 : Math.min((now - last) / 1000, 0.1);
+    last = now;
+    if (!document.hidden) {
+      phase = normalize(phase + dt / DURATION);
+      draw(phase);
+      window.__info.frames++;
+    }
+    frameId = requestAnimationFrame(tick);
+  }
+  function start() {
+    if (!reduced.matches && !frozen && frameId === null)
+      frameId = requestAnimationFrame(tick);
+  }
+  resize();
+  draw(phase);
+  addEventListener('resize', () => { resize(); draw(phase); });
+  reduced.addEventListener('change', () => {
+    stop();
+    draw(phase);
+    start();
+  });
+  addEventListener('keydown', event => {
+    if (event.code !== 'Space' || q.has('p') || reduced.matches) return;
+    event.preventDefault();
+    frozen = !frozen;
+    stop();
+    start();
+  });
+  // A reduced-motion preference or a requested phase draws one still, with no RAF.
+  if (reduced.matches || q.has('p')) return;
+  start();
+})();
+</script>
+</body>
+</html>

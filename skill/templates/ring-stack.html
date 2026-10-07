@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="motion-system" content="ring-stack">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ring stack</title>
+<!-- Loop: Every fixed section uses its spine coordinate and the phase circle.
+     Position, radius and orientation are recomputed directly, so the bending
+     stack returns smoothly without adding slices or retaining state.
+     Query: ?seed=N, ?t=seconds (default 16), ?p=0..1 for a still.
+     Palette: ?bg=RRGGBB&ink=RRGGBB&accent=RRGGBB. Space pauses playback. -->
+<style>
+  :root { --bg: #eee9df; --ink: #352e28; --accent: #b87848; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c" role="img" aria-label="Thin wooden rings stacked along a bending spine"></canvas>
+<script>
+(() => {
+  const q = new URLSearchParams(location.search);
+  const parsedSeed = Number.parseInt(q.get('seed') ?? '1', 10);
+  const seed = Number.isFinite(parsedSeed) ? parsedSeed >>> 0 : 1;
+  const parsedDuration = Number.parseFloat(q.get('t') ?? '16');
+  const DURATION = Number.isFinite(parsedDuration) && parsedDuration > 0 ? parsedDuration : 16;
+  for (const name of ['bg', 'ink', 'accent'])
+    if (/^(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(q.get(name) ?? ''))
+      document.documentElement.style.setProperty('--' + name, '#' + q.get(name));
+  function mulberry32(a) {
+    return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  }
+  const rng = mulberry32(seed), TAU = Math.PI * 2;
+  const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const swatch = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+  swatch.canvas.width = swatch.canvas.height = 1;
+  const colors = new Map();
+  function rgb(value) {
+    if (!colors.has(value)) {
+      swatch.clearRect(0, 0, 1, 1); swatch.fillStyle = '#000'; swatch.fillStyle = value;
+      swatch.fillRect(0, 0, 1, 1);
+      colors.set(value, Array.from(swatch.getImageData(0, 0, 1, 1).data).slice(0, 3));
+    }
+    return colors.get(value);
+  }
+  const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+  const color = a => 'rgb(' + a.map(v => Math.round(v)).join(',') + ')';
+  const unit = a => { const n = Math.hypot(...a) || 1; return a.map(v => v / n); };
+  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  let W = 1, H = 1, scale = 1;
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = cv.width = Math.max(1, Math.round(cv.clientWidth * dpr));
+    H = cv.height = Math.max(1, Math.round(cv.clientHeight * dpr));
+    scale = Math.min(W * 0.24, H * 0.175);
+  }
+  function polygon(points) {
+    ctx.beginPath();
+    points.forEach((point, i) => {
+      const x = W / 2 + point[0] * scale, y = H * 0.47 - point[1] * scale;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.closePath();
+  }
+
+  const count = 23, sides = 40, amplitude = 0.42 + rng() * 0.18;
+  const offset = rng() * TAU, yaw = (rng() - 0.5) * 0.65, tilt = 0.42 + rng() * 0.1;
+  const lobes = rng() < 0.5 ? 3 : 4, lobeAmount = 0.025 + rng() * 0.05;
+  const thickness = 0.025, hole = 0.68, height = 4.0 + rng() * 0.15;
+  const ct = Math.cos(tilt), st = Math.sin(tilt), cy = Math.cos(yaw), sy = Math.sin(yaw);
+  const transform = a => {
+    const x = a[0] * cy + a[2] * sy, z = a[2] * cy - a[0] * sy;
+    return [x, a[1] * ct - z * st, a[1] * st + z * ct];
+  };
+  const section = Array.from({ length: sides }, (_, i) => {
+    const a = i / sides * TAU, r = 1 + lobeAmount * Math.cos(lobes * a);
+    return [Math.cos(a) * r, Math.sin(a) * r];
+  });
+  function draw(p) {
+    const phaseAngle = TAU * p + offset, bg = rgb(css('--bg'));
+    const ink = rgb(css('--ink')), accent = rgb(css('--accent'));
+    ctx.fillStyle = color(bg); ctx.fillRect(0, 0, W, H);
+    ctx.save(); ctx.translate(W / 2, H * 0.47 + scale * 2.55); ctx.scale(scale * 1.7, scale * 0.13);
+    const shadow = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+    shadow.addColorStop(0, 'rgba(45,35,25,0.16)'); shadow.addColorStop(1, 'rgba(45,35,25,0)');
+    ctx.fillStyle = shadow; ctx.fillRect(-1, -1, 2, 2); ctx.restore();
+    const slices = [];
+    const innerColor = color(mix(accent, ink, 0.58));
+    const edgeColors = Array.from({ length: sides }, (_, j) =>
+      color(mix(accent, ink, 0.23 + 0.17 * Math.sin(j / sides * TAU))));
+    for (let i = 0; i < count; i++) {
+      const u = i / (count - 1), a = u * Math.PI * 1.65 + phaseAngle;
+      const center = [amplitude * Math.sin(a), (u - 0.5) * height, 0.24 * Math.cos(a)];
+      const tangent = unit([amplitude * 1.65 * Math.PI / height * Math.cos(a), 1,
+        -0.24 * 1.65 * Math.PI / height * Math.sin(a)]);
+      const right = unit(cross(tangent, [0, 0, 1])), back = unit(cross(right, tangent));
+      const radius = 0.80 + 0.22 * Math.sin(Math.PI * u) + 0.06 * Math.cos(TAU * u + phaseAngle);
+      const ring = (r, side) => section.map(([x, z]) => transform(center.map((v, j) =>
+        v + (right[j] * x + back[j] * z) * radius * r + tangent[j] * thickness * side)));
+      const top = ring(1, 1), bottom = ring(1, -1), innerTop = ring(hole, 1), innerBottom = ring(hole, -1);
+      slices.push({ top, bottom, innerTop, innerBottom, z: transform(center)[2],
+        normal: transform(tangent), u });
+    }
+    slices.sort((a, b) => a.z - b.z);
+    function annulus(outer, inner, fill) {
+      polygon(outer);
+      for (let i = inner.length - 1; i >= 0; i--) {
+        const x = W / 2 + inner[i][0] * scale, y = H * 0.47 - inner[i][1] * scale;
+        if (i === inner.length - 1) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.closePath(); ctx.fillStyle = fill; ctx.fill('evenodd');
+    }
+    for (const slice of slices) {
+      const front = slice.normal[2] >= 0, top = front ? slice.top : slice.bottom;
+      const bottom = front ? slice.bottom : slice.top;
+      const innerTop = front ? slice.innerTop : slice.innerBottom;
+      const innerBottom = front ? slice.innerBottom : slice.innerTop;
+      const face = color(mix(accent, bg, 0.19 + 0.13 * slice.u));
+      annulus(bottom, innerBottom, color(mix(accent, ink, 0.42)));
+      // Thin outer and inner walls give each slice a readable material edge.
+      const walls = [];
+      for (let j = 0; j < sides; j++) {
+        const k = (j + 1) % sides;
+        for (const [a, b, dark] of [[top, bottom, false], [innerTop, innerBottom, true]]) {
+          const points = [a[j], a[k], b[k], b[j]];
+          const z = (a[j][2] + a[k][2] + b[k][2] + b[j][2]) / 4;
+          if (dark ? z > slice.z : z < slice.z) continue;
+          walls.push({ points, z, fill: dark ? innerColor : edgeColors[j] });
+        }
+      }
+      walls.sort((a, b) => a.z - b.z);
+      for (const wall of walls) { polygon(wall.points); ctx.fillStyle = wall.fill; ctx.fill(); }
+      annulus(top, innerTop, face);
+      polygon(top); ctx.strokeStyle = color(mix(accent, bg, 0.5));
+      ctx.lineWidth = Math.max(0.45, scale * 0.002); ctx.stroke();
+      polygon(innerTop); ctx.strokeStyle = color(mix(accent, ink, 0.3)); ctx.stroke();
+    }
+  }
+
+  const normalize = p => ((p % 1) + 1) % 1;
+  const requestedPhase = Number.parseFloat(q.get('p') ?? '0');
+  let phase = Number.isFinite(requestedPhase) ? normalize(requestedPhase) : 0;
+  let frozen = q.has('p'), frameId = null, last = null;
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  window.__info = { seed, duration: DURATION, frames: 0 };
+
+  function stop() {
+    if (frameId !== null) cancelAnimationFrame(frameId);
+    frameId = null;
+    last = null;
+  }
+  // Rendering an export frame stops playback, including if called without ?p=.
+  window.renderFrame = (i, total) => {
+    if (!Number.isFinite(i) || !Number.isInteger(total) || total < 1)
+      throw new RangeError('renderFrame needs a finite frame index and a positive integer total');
+    stop();
+    frozen = true;
+    phase = normalize(i / total);
+    draw(phase);
+  };
+
+  function tick(now) {
+    frameId = null;
+    if (reduced.matches || frozen) return;
+    const dt = last === null ? 0 : Math.min((now - last) / 1000, 0.1);
+    last = now;
+    if (!document.hidden) {
+      phase = normalize(phase + dt / DURATION);
+      draw(phase);
+      window.__info.frames++;
+    }
+    frameId = requestAnimationFrame(tick);
+  }
+  function start() {
+    if (!reduced.matches && !frozen && frameId === null)
+      frameId = requestAnimationFrame(tick);
+  }
+  resize();
+  draw(phase);
+  addEventListener('resize', () => { resize(); draw(phase); });
+  reduced.addEventListener('change', () => {
+    stop();
+    draw(phase);
+    start();
+  });
+  addEventListener('keydown', event => {
+    if (event.code !== 'Space' || q.has('p') || reduced.matches) return;
+    event.preventDefault();
+    frozen = !frozen;
+    stop();
+    start();
+  });
+  // A reduced-motion preference or a requested phase draws one still, with no RAF.
+  if (reduced.matches || q.has('p')) return;
+  start();
+})();
+</script>
+</body>
+</html>

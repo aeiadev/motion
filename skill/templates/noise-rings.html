@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="motion-system" content="noise-rings">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Noise rings</title>
+<!-- Loop: fixed seeded spatial noise is sampled on a closed phase circle.
+     Bounded contour offsets preserve band spacing. The central opening is fixed.
+     Query: ?seed=N, ?p=0..1 for a still, ?t=seconds. Space pauses playback.
+     Optional palette: ?bg=RRGGBB&ink=RRGGBB&accent=RRGGBB. -->
+<style>
+  :root { --bg: #efe9dc; --ink: #284743; --accent: #bc805a; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c" role="img" aria-label="Muted concentric paper contours around a still circular opening"></canvas>
+<script>
+(() => {
+  const TAU = Math.PI * 2, COUNT = 16, POINTS = 192;
+  const q = new URLSearchParams(location.search);
+  const parsedSeed = Number.parseInt(q.get('seed') ?? '1', 10);
+  const seed = Number.isFinite(parsedSeed) ? parsedSeed >>> 0 : 1;
+  const parsedDuration = Number.parseFloat(q.get('t') ?? '16');
+  const DURATION = Number.isFinite(parsedDuration) && parsedDuration > 0 ? parsedDuration : 16;
+  for (const key of ['bg', 'ink', 'accent'])
+    if (/^(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(q.get(key) ?? ''))
+      document.documentElement.style.setProperty('--' + key, '#' + q.get(key));
+  const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  function mulberry32(a) {
+    return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  }
+  const random = mulberry32(seed), values = new Float32Array(4096);
+  for (let i = 0; i < values.length; i++) values[i] = random();
+  const fade = t => t * t * t * (t * (t * 6 - 15) + 10);
+  function noise(x, y) {
+    const ix = Math.floor(x), iy = Math.floor(y), u = fade(x - ix), v = fade(y - iy);
+    const a = values[(ix & 63) + ((iy & 63) << 6)];
+    const b = values[((ix + 1) & 63) + ((iy & 63) << 6)];
+    const c = values[(ix & 63) + (((iy + 1) & 63) << 6)];
+    const d = values[((ix + 1) & 63) + (((iy + 1) & 63) << 6)];
+    return a + (b - a) * u + (c - a + (d - c - b + a) * u) * v;
+  }
+  const fieldX = random() * 40, fieldY = random() * 40;
+  const turn = random() * TAU, eccentricity = 0.04 + random() * 0.06;
+  const offsetAngle = random() * TAU, frequency = 1.5 + random() * 0.65;
+  const directions = Array.from({ length: POINTS }, (_, i) => {
+    const a = i * TAU / POINTS;
+    return { x: Math.cos(a), y: Math.sin(a), oval: Math.cos(2 * a + turn) };
+  });
+  const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  const colorCanvas = document.createElement('canvas');
+  colorCanvas.width = colorCanvas.height = 1;
+  const colorContext = colorCanvas.getContext('2d', { willReadFrequently: true });
+  function rgb(color) {
+    colorContext.fillStyle = color;
+    colorContext.fillRect(0, 0, 1, 1);
+    return Array.from(colorContext.getImageData(0, 0, 1, 1).data).slice(0, 3);
+  }
+  const mix = (a, b, t) => 'rgb(' + a.map((v, i) => Math.round(v + (b[i] - v) * t)).join(',') + ')';
+  let scale = 1, background, colors;
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cv.width = Math.max(1, Math.round(cv.clientWidth * dpr));
+    cv.height = Math.max(1, Math.round(cv.clientHeight * dpr));
+    scale = Math.min(cv.width, cv.height) / 1000;
+    background = css('--bg');
+    const bg = rgb(background), ink = rgb(css('--ink')), accent = rgb(css('--accent'));
+    colors = [mix(ink, bg, 0.03), mix(ink, bg, 0.2), mix(ink, bg, 0.38),
+      mix(ink, bg, 0.58), mix(ink, bg, 0.77), mix(bg, accent, 0.38),
+      mix(bg, accent, 0.7), mix(bg, accent, 1), mix(accent, ink, 0.25),
+      mix(accent, ink, 0.5), mix(accent, ink, 0.83), mix(ink, bg, 0.25),
+      mix(ink, bg, 0.5), mix(bg, accent, 0.35), mix(bg, accent, 0.7), mix(accent, ink, 0.15)];
+  }
+  function draw(p) {
+    const theta = TAU * p, px = 0.62 * Math.cos(theta), py = 0.62 * Math.sin(theta);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = background;
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.setTransform(scale, 0, 0, scale, cv.width / 2, cv.height / 2);
+    // A shared radial field keeps neighboring contours ordered. The amplitude
+    // grows gradually from the aperture, never by more than the band spacing.
+    const roughness = directions.map(d =>
+      (noise(fieldX + d.x * frequency + px, fieldY + d.y * frequency + py) - 0.5) * 2);
+    for (let band = COUNT - 1; band >= 0; band--) {
+      const fraction = (band + 1) / COUNT, radius = 88 + (band + 1) * 19.5;
+      const shift = 17 * fraction * fraction;
+      ctx.beginPath();
+      for (let j = 0; j < POINTS; j++) {
+        const d = directions[j];
+        const r = radius + fraction * (roughness[j] * 48 + d.oval * eccentricity * 210);
+        const x = d.x * r + Math.cos(offsetAngle) * shift;
+        const y = d.y * r + Math.sin(offsetAngle) * shift;
+        if (j === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.fillStyle = colors[COUNT - 1 - band];
+      ctx.fill();
+    }
+    ctx.beginPath();
+    ctx.arc(0, 0, 88, 0, TAU);
+    ctx.fillStyle = background;
+    ctx.fill();
+  }
+  const normalize = p => ((p % 1) + 1) % 1;
+  const requestedPhase = Number.parseFloat(q.get('p') ?? '0');
+  let phase = Number.isFinite(requestedPhase) ? normalize(requestedPhase) : 0;
+  let frozen = q.has('p'), frameId = null, last = null;
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  window.__info = { seed, duration: DURATION, frames: 0 };
+  function stop() {
+    if (frameId !== null) cancelAnimationFrame(frameId);
+    frameId = null;
+    last = null;
+  }
+  window.renderFrame = (i, total) => {
+    if (!Number.isFinite(i) || !Number.isInteger(total) || total < 1)
+      throw new RangeError('renderFrame needs a finite frame index and a positive integer total');
+    stop();
+    frozen = true;
+    phase = normalize(i / total);
+    draw(phase);
+  };
+  function tick(now) {
+    frameId = null;
+    if (reduced.matches || frozen) return;
+    const dt = last === null ? 0 : Math.min((now - last) / 1000, 0.1);
+    last = now;
+    if (!document.hidden) {
+      phase = normalize(phase + dt / DURATION);
+      draw(phase);
+      window.__info.frames++;
+    }
+    frameId = requestAnimationFrame(tick);
+  }
+  function start() {
+    if (!reduced.matches && !frozen && frameId === null) frameId = requestAnimationFrame(tick);
+  }
+  resize();
+  draw(phase);
+  addEventListener('resize', () => { resize(); draw(phase); });
+  reduced.addEventListener('change', () => { stop(); draw(phase); start(); });
+  addEventListener('keydown', event => {
+    if (event.code !== 'Space' || q.has('p') || reduced.matches) return;
+    event.preventDefault();
+    frozen = !frozen;
+    stop();
+    start();
+  });
+  if (reduced.matches || q.has('p')) return;
+  start();
+})();
+</script>
+</body>
+</html>

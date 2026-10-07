@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="motion-system" content="voronoi">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voronoi relaxation</title>
+<!-- Loop: relax seeded sites for three fixed Lloyd passes, then move each retained
+     site on a small closed orbit. Rebuild exact half-plane-clipped cells at every phase.
+     Query: ?seed=N, ?t=seconds, ?p=0..1 for a still; bg, ink, accent accept hex colours.
+     Space pauses normal playback. Export frames never resume the live loop. -->
+<style>
+  :root { --bg: #e8e4dc; --ink: #334d53; --accent: #b06e55; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c" role="img" aria-label="A gently shifting mosaic of pale slate and terracotta paper cells"></canvas>
+<script>
+(() => {
+  const W = 1600, H = 900, TAU = Math.PI * 2, COUNT = 88;
+  const q = new URLSearchParams(location.search);
+  const parsedSeed = Number.parseInt(q.get('seed') ?? '1', 10);
+  const seed = Number.isFinite(parsedSeed) ? parsedSeed >>> 0 : 1;
+  const parsedDuration = Number.parseFloat(q.get('t') ?? '18');
+  const DURATION = Number.isFinite(parsedDuration) && parsedDuration > 0 ? parsedDuration : 18;
+  for (const key of ['bg', 'ink', 'accent'])
+    if (/^(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(q.get(key) ?? ''))
+      document.documentElement.style.setProperty('--' + key, '#' + q.get(key));
+  const css = key => getComputedStyle(document.documentElement).getPropertyValue(key).trim();
+  function mulberry32(a) {
+    return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  }
+  const rng = mulberry32(seed);
+  const clusterX = 300 + rng() * 1000, clusterY = 200 + rng() * 500;
+  let sites = Array.from({ length: COUNT }, (_, i) => {
+    const angle = rng() * TAU, radius = Math.sqrt(rng()) * 260;
+    return i < 20 ? [clusterX + Math.cos(angle) * radius, clusterY + Math.sin(angle) * radius]
+      : [-90 + rng() * (W + 180), -90 + rng() * (H + 180)];
+  });
+  // Clip a rectangular domain by every perpendicular bisector: genuine Voronoi polygons.
+  function cell(index, positions, neighbours) {
+    let polygon = [[-140, -140], [W + 140, -140], [W + 140, H + 140], [-140, H + 140]];
+    const [x, y] = positions[index];
+    let radiusSquared = Infinity;
+    for (let n = 0; n < positions.length; n++) {
+      const j = neighbours ? neighbours[n] : n;
+      if (j === index) continue;
+      const nx = positions[j][0] - x, ny = positions[j][1] - y;
+      // A bisector beyond the polygon's enclosing circle cannot clip this cell.
+      if (nx * nx + ny * ny > 4 * radiusSquared) continue;
+      const limit = (positions[j][0] * positions[j][0] + positions[j][1] * positions[j][1] - x * x - y * y) * 0.5;
+      if (polygon.every(point => point[0] * nx + point[1] * ny <= limit)) continue;
+      const clipped = [];
+      for (let k = 0; k < polygon.length; k++) {
+        const from = polygon[k], to = polygon[(k + 1) % polygon.length];
+        const a = from[0] * nx + from[1] * ny - limit, b = to[0] * nx + to[1] * ny - limit;
+        if (a <= 0) clipped.push(from);
+        if ((a <= 0) !== (b <= 0)) {
+          const t = a / (a - b);
+          clipped.push([from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t]);
+        }
+      }
+      polygon = clipped;
+      if (!polygon.length) break;
+      radiusSquared = 0;
+      for (const point of polygon)
+        radiusSquared = Math.max(radiusSquared, (point[0] - x) ** 2 + (point[1] - y) ** 2);
+    }
+    return polygon;
+  }
+  function centroid(polygon, fallback) {
+    let area = 0, x = 0, y = 0;
+    for (let i = 0; i < polygon.length; i++) {
+      const a = polygon[i], b = polygon[(i + 1) % polygon.length], cross = a[0] * b[1] - b[0] * a[1];
+      area += cross; x += (a[0] + b[0]) * cross; y += (a[1] + b[1]) * cross;
+    }
+    return Math.abs(area) < 0.0001 ? fallback : [x / (3 * area), y / (3 * area)];
+  }
+  // Partial Lloyd steps balance cells while retaining the seed's uneven density.
+  for (let pass = 0; pass < 3; pass++) sites = sites.map((site, i) => {
+    const target = centroid(cell(i, sites), site);
+    return [site[0] + (target[0] - site[0]) * 0.7, site[1] + (target[1] - site[1]) * 0.7];
+  });
+  const traits = sites.map(() => ({
+    phase: rng() * TAU, radius: 4 + rng() * 8, ellipse: 0.5 + rng() * 0.5,
+    accent: rng() < 0.15, tone: 0.055 + rng() * 0.15, edge: 0.18 + rng() * 0.16
+  }));
+  // Clip near sites first so distant bisectors can be rejected without allocating polygons.
+  const neighbours = sites.map(site => sites.map((_, i) => i).sort((a, b) =>
+    (sites[a][0] - site[0]) ** 2 + (sites[a][1] - site[1]) ** 2
+    - (sites[b][0] - site[0]) ** 2 - (sites[b][1] - site[1]) ** 2));
+  const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  let scale = 1, ox = 0, oy = 0;
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cv.width = Math.max(1, Math.round(cv.clientWidth * dpr));
+    cv.height = Math.max(1, Math.round(cv.clientHeight * dpr));
+    scale = Math.max(cv.width / W, cv.height / H);
+    ox = (cv.width - W * scale) / 2; oy = (cv.height - H * scale) / 2;
+  }
+  function draw(p) {
+    const theta = p * TAU;
+    const positions = sites.map((site, i) => {
+      const t = traits[i], angle = theta + t.phase;
+      return [site[0] + Math.cos(angle) * t.radius, site[1] + Math.sin(angle) * t.radius * t.ellipse];
+    });
+    const ink = css('--ink'), accent = css('--accent');
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1;
+    ctx.fillStyle = css('--bg'); ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.setTransform(scale, 0, 0, scale, ox, oy);
+    ctx.lineJoin = 'round'; ctx.lineWidth = 1;
+    for (let i = 0; i < positions.length; i++) {
+      const polygon = cell(i, positions, neighbours[i]), centre = centroid(polygon, positions[i]), t = traits[i];
+      if (polygon.length < 3) continue;
+      // Inset each cut-paper tile by a fixed distance, leaving a fine paper-coloured seam.
+      const inset = polygon.map(point => {
+        const dx = point[0] - centre[0], dy = point[1] - centre[1];
+        const amount = Math.max(0, 1 - 2.1 / Math.max(1, Math.hypot(dx, dy)));
+        return [centre[0] + dx * amount, centre[1] + dy * amount];
+      });
+      ctx.beginPath();
+      inset.forEach((point, j) => { if (j === 0) ctx.moveTo(...point); else ctx.lineTo(...point); });
+      ctx.closePath();
+      ctx.fillStyle = t.accent ? accent : ink;
+      ctx.globalAlpha = t.tone + (t.accent ? 0.055 : 0); ctx.fill();
+      ctx.strokeStyle = t.accent ? accent : ink;
+      ctx.globalAlpha = t.edge; ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+  const normalize = p => ((p % 1) + 1) % 1;
+  const requestedPhase = Number.parseFloat(q.get('p') ?? '0');
+  let phase = Number.isFinite(requestedPhase) ? normalize(requestedPhase) : 0;
+  let frozen = q.has('p'), exported = false, frameId = null, last = null;
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  window.__info = { seed, duration: DURATION, frames: 0 };
+  function stop() {
+    if (frameId !== null) cancelAnimationFrame(frameId);
+    frameId = null; last = null;
+  }
+  window.renderFrame = (i, total) => {
+    if (!Number.isFinite(i) || !Number.isInteger(total) || total < 1)
+      throw new RangeError('renderFrame needs a finite frame index and a positive integer total');
+    stop(); frozen = true; exported = true;
+    phase = normalize(i / total); draw(phase);
+  };
+  function tick(now) {
+    frameId = null;
+    if (reduced.matches || frozen || document.hidden) return;
+    const dt = last === null ? 0 : Math.min((now - last) / 1000, 0.1);
+    last = now; phase = normalize(phase + dt / DURATION);
+    draw(phase); window.__info.frames++;
+    frameId = requestAnimationFrame(tick);
+  }
+  function start() {
+    if (!reduced.matches && !frozen && !document.hidden && frameId === null)
+      frameId = requestAnimationFrame(tick);
+  }
+  resize(); draw(phase);
+  addEventListener('resize', () => { resize(); if (!document.hidden) draw(phase); });
+  reduced.addEventListener('change', () => { stop(); if (!document.hidden) draw(phase); start(); });
+  document.addEventListener('visibilitychange', () => { stop(); if (!document.hidden) { draw(phase); start(); } });
+  addEventListener('keydown', event => {
+    if (event.code !== 'Space' || event.repeat || q.has('p') || reduced.matches || exported) return;
+    event.preventDefault(); frozen = !frozen; stop(); start();
+  });
+  if (reduced.matches || q.has('p')) return;
+  start();
+})();
+</script>
+</body>
+</html>

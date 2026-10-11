@@ -1,0 +1,30 @@
+name: CI
+on:
+  push:
+  pull_request:
+defaults:
+  run:
+    shell: bash
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - name: Claude fresh user
+        run: bash tests/fresh-user.sh
+      - name: Codex fresh user
+        if: ${{ !cancelled() }}
+        run: bash tests/fresh-user-codex.sh
+      - name: Static check
+        if: ${{ !cancelled() }}
+        run: node tests/static-check.mjs
+      - name: Workflow check
+        if: ${{ !cancelled() }}
+        run: bash tests/test_ci_workflow.sh

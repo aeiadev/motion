@@ -5,6 +5,7 @@ repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 test_home=$(mktemp -d)
 trap 'rm -rf -- "$test_home"' EXIT
 export HOME="$test_home"
+export USERPROFILE="$test_home/userprofile"
 export XDG_STATE_HOME="$test_home/state"
 backups="$XDG_STATE_HOME/motion/backups"
 unset CLAUDE_HOME CODEX_HOME
@@ -57,19 +58,42 @@ assert.equal(systems.length, 23, 'installed registry must contain exactly 23 sys
 NODE
 node tests/static-check.mjs --skill-dir "$installed"
 
+# Portable tree snapshot (BSD find, bash 3.2): path, type and link target.
+tree_snapshot() {
+  local entry kind
+  (cd -- "$1" && find . -print | LC_ALL=C sort | while IFS= read -r entry; do
+    if [ -L "$entry" ]; then kind="l $(readlink "$entry")"; elif [ -d "$entry" ]; then kind=d; else kind=f; fi
+    printf '%s %s\n' "$entry" "$kind"
+  done)
+}
+
+snap_probe="$HOME/snap-probe"
+mkdir -p -- "$snap_probe"
+snap_a=$(tree_snapshot "$snap_probe")
+mkdir -- "$snap_probe/added"
+[[ $(tree_snapshot "$snap_probe") != "$snap_a" ]] || fail 'tree_snapshot did not notice a new entry'
+rm -rf -- "$snap_probe"
+
 # Rejected state paths must leave every entry in the skills root unchanged.
 skills_root="${installed%/motion}"
-ln -s -- "$skills_root" "$HOME/skills-alias"
-skills_before=$(find "$skills_root" -printf '%P %y %l\n' | LC_ALL=C sort)
-for bad_state in "$skills_root/nested-state" "$HOME/skills-alias/nested-state" "$skills_root/missing/../nested-state"; do
+# Git Bash without symlink rights copies instead of linking; skip only the alias case then.
+alias_state=''
+if ln -s -- "$skills_root" "$HOME/skills-alias" 2>/dev/null && [ -L "$HOME/skills-alias" ]; then
+  alias_state="$HOME/skills-alias/nested-state"
+else
+  rm -rf -- "$HOME/skills-alias"
+  printf 'SKIP symlink alias case: symlinks are unavailable here\n'
+fi
+skills_before=$(tree_snapshot "$skills_root")
+for bad_state in "$skills_root/nested-state" ${alias_state:+"$alias_state"} "$skills_root/missing/../nested-state"; do
   if XDG_STATE_HOME="$bad_state" bash ./install.sh --host codex > "$HOME/nested-state-output" 2>&1; then
     fail 'accepted a backup state directory inside a skills root'
   fi
   grep -q 'outside all skills directories' "$HOME/nested-state-output" || fail 'unsafe state path failed without explaining the rejection'
-  [[ $(find "$skills_root" -printf '%P %y %l\n' | LC_ALL=C sort) == "$skills_before" ]] || fail 'rejected state path changed the skills root'
+  [[ $(tree_snapshot "$skills_root") == "$skills_before" ]] || fail 'rejected state path changed the skills root'
   [[ -f "$installed/SKILL.md" ]] || fail 'unsafe backup path damaged the installed skill'
 done
-rm -- "$HOME/skills-alias"
+[ -z "$alias_state" ] || rm -- "$HOME/skills-alias"
 
 # Validation also precedes creation of an entirely new override directory.
 for operation in install uninstall; do
@@ -155,7 +179,9 @@ bash_bin=$(command -v bash)
 fixture_bin="$HOME/fixture-bin"
 mkdir -p -- "$fixture_bin"
 for command_name in dirname mkdir mktemp cp mv rm rmdir; do
-  ln -s -- "$(command -v "$command_name")" "$fixture_bin/$command_name"
+  # A wrapper, not a symlink, so this also works where symlinks are unavailable.
+  printf '#!%s\nexec %q "$@"\n' "$bash_bin" "$(command -v "$command_name")" > "$fixture_bin/$command_name"
+  chmod +x "$fixture_bin/$command_name"
 done
 rm -rf -- "$HOME/.claude" "$HOME/.codex"
 if PATH="$fixture_bin" "$bash_bin" ./install.sh > "$HOME/no-host-output" 2>&1; then

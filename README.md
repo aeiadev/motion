@@ -12,11 +12,22 @@ then adjust one aspect of it between previews. Save the result as HTML for a
 browser or export a video. Everything needed to draw the artwork lives in the
 HTML; reduced-motion playback presents a still image.
 
-Version 0.1.0 ships **23 working templates**, one for every system in the
+Version 0.1.1 ships **23 working templates**, one for every system in the
 catalogue. Each includes seeded composition, loop controls, palette overrides,
 and a reduced-motion still frame.
 
 ## Install
+
+Requirements: Bash 3.2 or newer and ordinary file tools to install; Python is not needed. Node.js LTS is needed later for contact sheets, frame rendering and MP4 export; browser capture also needs Playwright with its Chromium browser, and MP4 export needs ffmpeg.
+
+| Platform | Claude Code | Codex CLI | Requirements |
+| --- | --- | --- | --- |
+| Linux | Skill in `~/.claude/skills` | Skill in `~/.agents/skills` | Bash 3.2+; Node.js LTS for capture and export |
+| Stock macOS | Skill in `~/.claude/skills` | Skill in `~/.agents/skills` | System Bash 3.2 and BSD tools; Node.js LTS for capture and export |
+| Native Windows | Skill in `~/.claude/skills` | Skill in `~/.agents/skills` | Git for Windows, with `install.sh` run in Git Bash; Node.js LTS for capture and export |
+| WSL | As Linux, inside WSL | As Linux, inside WSL | As Linux; separate from a native Windows install |
+
+Under Git Bash, an explicit HOME is kept; the installer uses USERPROFILE only when HOME is unset or empty. Windows-style paths such as `C:\Users\me` are accepted in `CLAUDE_HOME`, `CODEX_HOME`, `XDG_STATE_HOME` and `--dir`. When Node.js is missing, the installer prints one note and still installs. Native Windows and WSL keep separate installations; install in each one you use.
 
 For Codex, use **Codex CLI 0.156 or newer**. The installer uses
 `~/.agents/skills`, which Codex 0.156 reads as its preferred user skill directory.
@@ -179,7 +190,7 @@ explains each drawing and suggests adjustments. Looped strip draws a Mobius surf
 ## Configuration and optional tools
 
 Installation uses Bash and ordinary filesystem tools. Automation uses Node.js
-18 or newer and its built-in modules. Playwright and its Chromium browser are
+LTS and its built-in modules. Playwright and its Chromium browser are
 optional tools for capture and tests; ffmpeg is optional for video export.
 
 The loader tries `PW_DIR` first, then a normal Playwright import. `PW_DIR` is a
@@ -198,8 +209,10 @@ your system. The generated pieces and acceptance tests do not use the network.
 
 Install ffmpeg with your operating system's package manager and put `ffmpeg`
 and `ffprobe` on PATH. Export uses H.264, yuv420p, and faststart; odd dimensions
-are padded to even sizes. It replaces the named output file. Temporary PNG
-frames are removed when export ends. Set `CRF` from 0 to 51 to control encoding
+are padded to even sizes. Export creates the output folder before rendering on
+every operating system and replaces the named output file. Under Git Bash, it
+passes Windows-style paths to Node.js and ffmpeg when `cygpath` is available.
+Temporary PNG frames are removed when export ends. Set `CRF` from 0 to 51 to control encoding
 quality; the default is 23, and lower numbers use more space.
 
 | Setting | Meaning |
@@ -258,6 +271,8 @@ browser tests print `SKIP` and a `PW_DIR` hint. Without ffmpeg, only the MP4 che
 is skipped. An installed but broken dependency is a failure. Fresh-user tests
 use a temporary HOME and verify installation, backup, custom paths, and removal
 for both hosts. They never run either CLI, call a model, or use the network.
+Where the account cannot create symlinks, as on Windows without Developer Mode,
+the fresh-user test skips only its symlinked state-path case.
 
 The secret-scanning configuration extends the default gitleaks rules. Generated
 files in `out/` and MP4 outputs are ignored by Git.

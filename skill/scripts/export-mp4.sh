@@ -32,9 +32,15 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-node "$script_dir/render-frames.mjs" "$template" "$frames_dir" "${options[@]}"
+# Git Bash: native node and ffmpeg need Windows-style (mixed) paths.
+native_path() {
+  if command -v cygpath >/dev/null 2>&1; then cygpath -m -- "$1"; else printf '%s\n' "$1"; fi
+}
+# Create the output folder before rendering, on every OS.
 mkdir -p -- "$(dirname -- "$output")"
+frames_arg=$(native_path "$frames_dir")
+node "$(native_path "$script_dir/render-frames.mjs")" "$(native_path "$template")" "$frames_arg" ${options[@]+"${options[@]}"}
 ffmpeg -nostdin -y -loglevel error -framerate "$fps" -start_number 0 \
-  -i "$frames_dir/frame-%05d.png" -vf 'pad=ceil(iw/2)*2:ceil(ih/2)*2' \
-  -c:v libx264 -pix_fmt yuv420p -crf "$crf" -movflags +faststart -an "$output"
+  -i "$frames_arg/frame-%05d.png" -vf 'pad=ceil(iw/2)*2:ceil(ih/2)*2' \
+  -c:v libx264 -pix_fmt yuv420p -crf "$crf" -movflags +faststart -an "$(native_path "$output")"
 printf 'Wrote %s\n' "$output"

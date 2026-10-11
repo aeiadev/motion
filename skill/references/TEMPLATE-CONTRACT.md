@@ -62,7 +62,7 @@ controlled separately by the renderer's `--duration` and `--fps` arguments.
 All 23 registered systems ship templates. To adapt one, copy its registered file
 and follow the catalogue's mechanism and loop recipe. To add a new system,
 create its template and update `systems.json`, `systems.md`, the README, and the
-expected registry in the static test together. Version 0.1.0 has 23 entries.
+expected registry in the static test together. Version 0.1.1 has 23 entries.
 
 From the repository root, run:
 

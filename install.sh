@@ -41,15 +41,37 @@ while [[ $# -gt 0 ]]; do
 done
 
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+
+# Git Bash (MSYS/Cygwin): use the Windows user profile as home and accept
+# Windows-style paths such as C:\Users\me in the path variables and --dir.
+# An explicit HOME always wins; USERPROFILE is used only when HOME is unset or empty.
+home_dir=${HOME:-}
+is_windows_shell=false
+case "$(uname -s 2>/dev/null || true)" in
+  MINGW*|MSYS*|CYGWIN*)
+    if command -v cygpath >/dev/null 2>&1; then
+      is_windows_shell=true
+      if [[ -z $home_dir && -n ${USERPROFILE:-} ]]; then home_dir=$(cygpath -u "$USERPROFILE"); fi
+    fi
+    ;;
+esac
+unix_path() {
+  if [[ $is_windows_shell == true && $1 =~ ^[A-Za-z]:[\\/] ]]; then cygpath -u "$1"; else printf '%s\n' "$1"; fi
+}
+[[ -n $home_dir ]] || fail 'HOME is not set. Set HOME (or USERPROFILE under Git Bash).'
+claude_home=$(unix_path "${CLAUDE_HOME:-$home_dir/.claude}")
+codex_home=$(unix_path "${CODEX_HOME:-$home_dir/.codex}")
+state_home=$(unix_path "${XDG_STATE_HOME:-$home_dir/.local/state}")
+[[ -z $override_dir ]] || override_dir=$(unix_path "$override_dir")
 hosts=()
 case "$host" in
   claude|codex) hosts=("$host") ;;
   both) hosts=(claude codex) ;;
   '')
-    if command -v claude >/dev/null 2>&1 || [[ -d ${CLAUDE_HOME:-$HOME/.claude} ]]; then
+    if command -v claude >/dev/null 2>&1 || [[ -d $claude_home ]]; then
       hosts+=(claude)
     fi
-    if command -v codex >/dev/null 2>&1 || [[ -d ${CODEX_HOME:-$HOME/.codex} ]]; then
+    if command -v codex >/dev/null 2>&1 || [[ -d $codex_home ]]; then
       hosts+=(codex)
     fi
     [[ ${#hosts[@]} -gt 0 ]] || fail 'No supported host detected. Choose --host claude, --host codex, or --host both.'
@@ -61,9 +83,9 @@ for selected_host in "${hosts[@]}"; do
   if [[ -n $override_dir ]]; then
     skills_dir="$override_dir"
   elif [[ $selected_host == claude ]]; then
-    skills_dir="${CLAUDE_HOME:-$HOME/.claude}/skills"
+    skills_dir="$claude_home/skills"
   else
-    skills_dir="$HOME/.agents/skills"
+    skills_dir="$home_dir/.agents/skills"
   fi
   # A shared override is one installation, even when both hosts are selected.
   if [[ ${#skills_dirs[@]} -eq 0 || $skills_dir != "${skills_dirs[0]}" ]]; then
@@ -92,10 +114,10 @@ resolve_directory() (
 
 prepare_backups() {
   local root
-  backup_root=$(resolve_directory "${XDG_STATE_HOME:-$HOME/.local/state}/motion/backups")
+  backup_root=$(resolve_directory "$state_home/motion/backups")
   # Check every selected and standard skills root, including missing roots,
   # before creating anything. Retained copies must never become discoverable.
-  for root in "${skills_dirs[@]}" "${CLAUDE_HOME:-$HOME/.claude}/skills" "$HOME/.agents/skills" "$HOME/.codex/skills"; do
+  for root in "${skills_dirs[@]}" "$claude_home/skills" "$home_dir/.agents/skills" "$home_dir/.codex/skills"; do
     root=$(resolve_directory "$root")
     [[ $root != / && $backup_root != "$root" && $backup_root != "$root/"* ]] || fail 'Choose XDG_STATE_HOME outside all skills directories.'
   done
@@ -149,4 +171,5 @@ for selected_host in "${hosts[@]}"; do
     printf '%s\n' 'Next: open Codex CLI in your project and ask $motion for a looping piece.'
   fi
 done
+command -v node >/dev/null 2>&1 || printf '%s\n' 'Note: Node.js was not found on PATH. Installing does not need it; contact sheets and MP4 export do.' >&2
 printf '%s\n' 'Read README.md for optional Playwright (PW_DIR) and ffmpeg setup.'
